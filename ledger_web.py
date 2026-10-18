@@ -162,6 +162,12 @@ def get_connection():
 conn = get_connection()
 cursor = conn.cursor(buffered=True)
 
+# Ensure default sales record exists (needed for foreign key)
+cursor.execute("SELECT COUNT(*) FROM sales WHERE sales_id=1")
+if cursor.fetchone()[0] == 0:
+    cursor.execute("INSERT INTO sales (sales_id, sales_name) VALUES (1, %s)", ("AA ENTERPRISES",))
+    conn.commit()
+
 # =========================
 # FUNCTIONS
 # =========================
