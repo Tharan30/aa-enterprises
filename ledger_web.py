@@ -2,6 +2,7 @@ import streamlit as st
 import mysql.connector
 import pandas as pd
 from datetime import date
+from io import BytesIO
 
 # =========================
 # PAGE CONFIG
@@ -14,89 +15,164 @@ st.set_page_config(
 )
 
 # =========================
-# UI CSS
+# LIGHT MODE — CLEAN UI
 # =========================
 
 st.markdown("""
 <style>
+/* ---- Global ---- */
 .stApp {
-    background: linear-gradient(135deg, #020617 0%, #0f172a 50%, #111827 100%);
-    color: white;
+    background-color: #f8fafc;
 }
 
 .block-container {
-    padding-top: 1.2rem;
+    padding-top: 1.5rem;
+    padding-bottom: 2rem;
+    max-width: 1200px;
 }
 
-.big-title {
-    font-size: 42px;
-    font-weight: 900;
-    background: linear-gradient(90deg, #38bdf8, #22c55e, #facc15);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+/* ---- Header ---- */
+.app-header {
+    text-align: center;
+    padding: 20px 0 10px;
 }
 
-.sub-title {
-    color: #cbd5e1;
-    font-size: 17px;
+.app-title {
+    font-size: 38px;
+    font-weight: 800;
+    color: #1e293b;
+    margin: 0;
+    letter-spacing: -0.5px;
+}
+
+.app-subtitle {
+    color: #64748b;
+    font-size: 15px;
+    margin-top: 4px;
+}
+
+/* ---- Metric Cards ---- */
+.metric-row {
+    display: flex;
+    gap: 16px;
+    margin: 20px 0 28px;
+}
+
+.m-card {
+    flex: 1;
+    background: white;
+    border-radius: 16px;
+    padding: 20px 24px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+
+.m-card .label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.m-card .value {
+    font-size: 28px;
+    font-weight: 800;
+    color: #0f172a;
+    margin-top: 4px;
+}
+
+.m-card.blue  .value { color: #2563eb; }
+.m-card.green .value { color: #16a34a; }
+.m-card.red   .value { color: #dc2626; }
+.m-card.amber .value { color: #d97706; }
+
+/* ---- Section Card ---- */
+.section-card {
+    background: white;
+    border-radius: 16px;
+    padding: 28px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     margin-bottom: 20px;
 }
 
-.card {
-    background: rgba(255,255,255,0.08);
-    padding: 22px;
-    border-radius: 22px;
-    border: 1px solid rgba(255,255,255,0.15);
-    box-shadow: 0 12px 35px rgba(0,0,0,0.35);
-}
-
-.metric-card {
-    background: linear-gradient(135deg, rgba(59,130,246,.25), rgba(34,197,94,.18));
-    padding: 22px;
-    border-radius: 24px;
-    border: 1px solid rgba(255,255,255,.20);
-    box-shadow: 0 10px 30px rgba(0,0,0,.30);
-}
-
-.metric-title {
-    color: #cbd5e1;
-    font-size: 15px;
-    font-weight: 600;
-}
-
-.metric-value {
+/* ---- Balance Banner ---- */
+.balance-banner {
+    background: linear-gradient(135deg, #2563eb, #3b82f6);
     color: white;
-    font-size: 34px;
-    font-weight: 900;
+    padding: 18px 28px;
+    border-radius: 14px;
+    font-size: 22px;
+    font-weight: 700;
+    margin-bottom: 16px;
 }
 
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
-}
-
+/* ---- Tabs ---- */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 12px;
+    gap: 8px;
+    background: white;
+    padding: 6px;
+    border-radius: 14px;
+    border: 1px solid #e2e8f0;
 }
 
 .stTabs [data-baseweb="tab"] {
-    background: rgba(255,255,255,0.08);
-    border-radius: 18px;
-    padding: 12px 22px;
+    border-radius: 10px;
+    padding: 10px 20px;
+    font-weight: 600;
+    color: #64748b;
+}
+
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    background: #2563eb;
     color: white;
 }
 
+/* ---- Buttons ---- */
 .stButton>button {
-    border-radius: 14px;
-    height: 45px;
-    font-weight: 700;
+    border-radius: 10px;
+    font-weight: 600;
     border: none;
-    background: linear-gradient(90deg, #2563eb, #22c55e);
+    padding: 8px 20px;
+}
+
+.stFormSubmitButton>button {
+    background: #2563eb;
+    color: white;
+    border-radius: 10px;
+    font-weight: 600;
+    height: 42px;
+    border: none;
+}
+
+.stFormSubmitButton>button:hover {
+    background: #1d4ed8;
     color: white;
 }
 
-.stButton>button:hover {
-    background: linear-gradient(90deg, #22c55e, #facc15);
-    color: black;
+/* ---- Sidebar ---- */
+[data-testid="stSidebar"] {
+    background-color: #ffffff;
+    border-right: 1px solid #e2e8f0;
+}
+
+/* ---- Dataframe ---- */
+.stDataFrame {
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+/* ---- Upload area ---- */
+[data-testid="stFileUploader"] {
+    background: #f1f5f9;
+    border-radius: 12px;
+    padding: 8px;
+}
+
+/* ---- Form inputs ---- */
+.stTextInput>div>div>input, .stNumberInput>div>div>input, .stSelectbox>div>div {
+    border-radius: 8px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -113,19 +189,26 @@ def check_password():
     if st.session_state.authenticated:
         return True
 
-    st.markdown('<div class="big-title">AA ENTERPRISES</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">🔒 Login to Access Dashboard</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:60vh;">
+        <div style="font-size:48px; margin-bottom:8px;">⛽</div>
+        <div style="font-size:32px; font-weight:800; color:#1e293b;">AA ENTERPRISES</div>
+        <div style="color:#64748b; font-size:15px; margin-bottom:28px;">Enter password to access the dashboard</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    with st.form("login_form"):
-        password = st.text_input("Enter Password", type="password")
-        submitted = st.form_submit_button("Login")
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        with st.form("login_form"):
+            password = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Enter password...")
+            submitted = st.form_submit_button("Login", use_container_width=True)
 
-        if submitted:
-            if password == st.secrets["app_password"]:
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("❌ Incorrect password")
+            if submitted:
+                if password == st.secrets["app_password"]:
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect password")
 
     return False
 
@@ -138,7 +221,7 @@ if not check_password():
 # =========================
 
 def get_connection():
-    """Create a fresh MySQL connection each run to avoid stale connections on cloud."""
+    """Create a fresh MySQL connection each run."""
     try:
         conn = mysql.connector.connect(
             host=st.secrets["mysql"]["host"],
@@ -152,114 +235,90 @@ def get_connection():
         )
         return conn
     except mysql.connector.Error as e:
-        st.error(f"❌ Database connection failed: {e}")
+        st.error(f"Database connection failed: {e}")
         st.stop()
 
 
 def run_query(conn, query, params=None):
-    """Execute a query and return results safely with a fresh cursor."""
+    """Execute a query safely with a fresh cursor."""
     cursor = conn.cursor(buffered=True)
     cursor.execute(query, params)
     return cursor
 
 
 def get_dataframe(conn, query, params=None):
-    """Read SQL into a DataFrame with error handling."""
+    """Read SQL into a DataFrame."""
     try:
         return pd.read_sql(query, conn, params=params)
     except Exception:
-        # Reconnect and retry once
         conn.ping(reconnect=True)
         return pd.read_sql(query, conn, params=params)
 
 
-# Get connection
+# Connect
 conn = get_connection()
 
-# Ensure default sales record exists (needed for foreign key)
+# Ensure default sales record
 try:
     cur = run_query(conn, "SELECT COUNT(*) FROM sales WHERE sales_id=1")
-    count = cur.fetchone()[0]
-    cur.close()
-    if count == 0:
-        cur = run_query(conn, "INSERT INTO sales (sales_id, sales_name) VALUES (1, %s)", ("AA ENTERPRISES",))
+    if cur.fetchone()[0] == 0:
+        run_query(conn, "INSERT INTO sales (sales_id, sales_name) VALUES (1, %s)", ("AA ENTERPRISES",))
         conn.commit()
-        cur.close()
+    cur.close()
 except mysql.connector.Error:
-    # Already exists or table issue — safe to ignore
     try:
         conn.rollback()
     except Exception:
         pass
 
 # =========================
-# FUNCTIONS
+# HELPER FUNCTIONS
 # =========================
 
 def recalculate_balances(conn, customer_id):
-    """Recalculate running balances for a customer's transactions."""
+    """Recalculate running balances for a customer."""
     cur = run_query(conn, """
-    SELECT id, debit, credit
-    FROM ledger_transactions
-    WHERE customer_id=%s
-    ORDER BY trans_date ASC, id ASC
+    SELECT id, debit, credit FROM ledger_transactions
+    WHERE customer_id=%s ORDER BY trans_date ASC, id ASC
     """, (customer_id,))
-
     rows = cur.fetchall()
     cur.close()
-    running_balance = 0.0
 
+    running = 0.0
     for row in rows:
-        db_id = row[0]
-        debit = float(row[1] or 0)
-        credit = float(row[2] or 0)
-
-        running_balance += debit + credit
-
-        cur2 = run_query(conn, """
-        UPDATE ledger_transactions
-        SET balance=%s
-        WHERE id=%s
-        """, (round(running_balance, 2), db_id))
-        cur2.close()
-
+        running += float(row[1] or 0) + float(row[2] or 0)
+        c = run_query(conn, "UPDATE ledger_transactions SET balance=%s WHERE id=%s",
+                      (round(running, 2), row[0]))
+        c.close()
     conn.commit()
 
 
 def get_customers(conn):
-    """Get all customers as a DataFrame."""
-    return get_dataframe(conn, """
-    SELECT customer_id, customer_name, phone
-    FROM customers
-    ORDER BY customer_name
-    """)
+    return get_dataframe(conn, "SELECT customer_id, customer_name, phone FROM customers ORDER BY customer_name")
 
 
 def get_transactions(conn, customer_id):
-    """Get transactions for a customer as a DataFrame."""
     return get_dataframe(conn, """
-    SELECT
-        id,
-        trans_date,
-        trans_id,
-        vehicle,
-        product,
-        litres,
-        debit,
-        credit,
-        balance
-    FROM ledger_transactions
-    WHERE customer_id=%s
+    SELECT id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance
+    FROM ledger_transactions WHERE customer_id=%s
     ORDER BY trans_date ASC, id ASC
     """, params=(customer_id,))
 
 
 # =========================
-# HEADER & METRICS
+# HEADER
 # =========================
 
-st.markdown('<div class="big-title">AA ENTERPRISES</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Sales Ledger Dashboard</div>', unsafe_allow_html=True)
+st.markdown("""
+<div class="app-header">
+    <div class="app-title">⛽ AA ENTERPRISES</div>
+    <div class="app-subtitle">Sales Ledger Dashboard</div>
+</div>
+""", unsafe_allow_html=True)
+
+# =========================
+# METRICS
+# =========================
 
 customers_df = get_customers(conn)
 total_customers = len(customers_df)
@@ -272,250 +331,336 @@ cur = run_query(conn, "SELECT COALESCE(SUM(debit),0), COALESCE(SUM(credit),0) FR
 total_debit, total_credit = cur.fetchone()
 cur.close()
 
-m1, m2, m3, m4 = st.columns(4)
-
-with m1:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-title">Total Customers</div>
-        <div class="metric-value">{total_customers}</div>
+st.markdown(f"""
+<div class="metric-row">
+    <div class="m-card blue">
+        <div class="label">Customers</div>
+        <div class="value">{total_customers}</div>
     </div>
-    """, unsafe_allow_html=True)
-
-with m2:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-title">Total Transactions</div>
-        <div class="metric-value">{total_transactions}</div>
+    <div class="m-card green">
+        <div class="label">Transactions</div>
+        <div class="value">{total_transactions}</div>
     </div>
-    """, unsafe_allow_html=True)
-
-with m3:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-title">Total Debit</div>
-        <div class="metric-value">₹ {round(float(total_debit), 2)}</div>
+    <div class="m-card red">
+        <div class="label">Total Debit</div>
+        <div class="value">₹ {round(float(total_debit), 2):,.2f}</div>
     </div>
-    """, unsafe_allow_html=True)
-
-with m4:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-title">Total Credit</div>
-        <div class="metric-value">₹ {round(float(total_credit), 2)}</div>
+    <div class="m-card amber">
+        <div class="label">Total Credit</div>
+        <div class="value">₹ {round(float(total_credit), 2):,.2f}</div>
     </div>
-    """, unsafe_allow_html=True)
+</div>
+""", unsafe_allow_html=True)
 
-st.write("")
-
-# Build customer lookup dict (used across tabs)
+# Build customer lookup
 customer_dict = {}
 if not customers_df.empty:
-    customer_dict = dict(zip(
-        customers_df["customer_name"],
-        customers_df["customer_id"]
-    ))
+    customer_dict = dict(zip(customers_df["customer_name"], customers_df["customer_id"]))
 
 # =========================
 # TABS
 # =========================
 
-tab1, tab2, tab3 = st.tabs(["👥 Customers", "📒 Ledger", "🗑 Delete / Manage"])
+tab1, tab2, tab3, tab4 = st.tabs(["👥 Customers", "📒 Ledger", "📥 Import Excel", "⚙️ Manage"])
 
 # =========================
-# CUSTOMERS TAB
+# TAB 1 — CUSTOMERS
 # =========================
 
 with tab1:
-    st.subheader("Add New Customer")
+    col_add, col_list = st.columns([1, 2])
 
-    with st.form("add_customer_form"):
-        c1, c2 = st.columns(2)
+    with col_add:
+        st.markdown("#### ➕ Add Customer")
+        with st.form("add_customer_form"):
+            name = st.text_input("Customer Name")
+            phone = st.text_input("Phone Number")
+            add_btn = st.form_submit_button("Add Customer", use_container_width=True)
 
-        name = c1.text_input("Customer Name")
-        phone = c2.text_input("Phone Number")
+            if add_btn:
+                if not name.strip():
+                    st.error("Enter a customer name")
+                else:
+                    try:
+                        cur = run_query(conn, "INSERT INTO customers(sales_id, customer_name, phone) VALUES(%s,%s,%s)",
+                                        (1, name.strip(), phone.strip()))
+                        conn.commit()
+                        cur.close()
+                        st.success(f"Added **{name.strip()}**")
+                        st.rerun()
+                    except mysql.connector.Error as e:
+                        conn.rollback()
+                        st.error(f"Error: {e}")
 
-        add_customer = st.form_submit_button("Add Customer")
-
-        if add_customer:
-            if name.strip() == "":
-                st.error("Enter customer name")
-            else:
-                try:
-                    cur = run_query(conn, """
-                    INSERT INTO customers(sales_id, customer_name, phone)
-                    VALUES(%s,%s,%s)
-                    """, (1, name.strip(), phone.strip()))
-                    conn.commit()
-                    cur.close()
-                    st.success("✅ Customer Added Successfully")
-                    st.rerun()
-                except mysql.connector.Error as e:
-                    conn.rollback()
-                    st.error(f"❌ Error adding customer: {e}")
-
-    st.subheader("Customer List")
-    st.dataframe(customers_df, use_container_width=True, hide_index=True)
+    with col_list:
+        st.markdown("#### 📋 Customer List")
+        if customers_df.empty:
+            st.info("No customers yet. Add one to get started.")
+        else:
+            st.dataframe(customers_df, use_container_width=True, hide_index=True, height=400)
 
 # =========================
-# LEDGER TAB
+# TAB 2 — LEDGER
 # =========================
 
 with tab2:
-    st.subheader("Customer Ledger")
-
     if customers_df.empty:
-        st.warning("No customers found. Add a customer first.")
+        st.info("No customers found. Add a customer first in the Customers tab.")
     else:
-        selected_name = st.selectbox("Select Customer", list(customer_dict.keys()))
+        selected_name = st.selectbox("Select Customer", list(customer_dict.keys()), key="ledger_customer")
         selected_customer = int(customer_dict[selected_name])
-
-        st.markdown(f"### 📌 {selected_name}")
-
-        with st.form("add_transaction_form"):
-            c1, c2, c3, c4 = st.columns(4)
-
-            trans_date = c1.date_input("Date", date.today())
-            trans_id = c2.text_input("Transaction ID")
-            vehicle = c3.text_input("Vehicle")
-            product = c4.text_input("Product")
-
-            c5, c6, c7 = st.columns(3)
-
-            litres = c5.number_input("Litres", value=0.0, step=0.01)
-            debit = c6.number_input("Debit", value=0.0, step=0.01)
-            credit = c7.number_input("Credit", value=0.0, step=0.01)
-
-            add_trans = st.form_submit_button("Add Transaction")
-
-            if add_trans:
-                try:
-                    cur = run_query(conn, """
-                    INSERT INTO ledger_transactions(
-                        customer_id,
-                        trans_date,
-                        trans_id,
-                        vehicle,
-                        product,
-                        litres,
-                        debit,
-                        credit,
-                        balance
-                    )
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    """, (
-                        selected_customer,
-                        trans_date,
-                        trans_id.strip(),
-                        vehicle.strip(),
-                        product.strip(),
-                        litres,
-                        debit,
-                        credit,
-                        0
-                    ))
-                    conn.commit()
-                    cur.close()
-                    recalculate_balances(conn, selected_customer)
-                    st.success("✅ Transaction Added")
-                    st.rerun()
-                except mysql.connector.Error as e:
-                    conn.rollback()
-                    st.error(f"❌ Error adding transaction: {e}")
 
         transactions_df = get_transactions(conn, selected_customer)
 
+        # Balance banner
         if not transactions_df.empty:
-            last_balance = transactions_df["balance"].iloc[-1]
-
+            last_balance = round(float(transactions_df["balance"].iloc[-1]), 2)
+            bal_color = "#dc2626" if last_balance > 0 else "#16a34a" if last_balance < 0 else "#64748b"
             st.markdown(f"""
-            <div class="card">
-                <h3>Current Balance: ₹ {round(float(last_balance), 2)}</h3>
+            <div style="background:{bal_color}; color:white; padding:16px 24px; border-radius:12px;
+                        font-size:20px; font-weight:700; margin-bottom:16px;">
+                📌 {selected_name} — Balance: ₹ {last_balance:,.2f}
             </div>
             """, unsafe_allow_html=True)
 
-            st.write("")
+        # Add transaction form
+        with st.expander("➕ Add New Transaction", expanded=False):
+            with st.form("add_transaction_form"):
+                c1, c2, c3, c4 = st.columns(4)
+                trans_date = c1.date_input("Date", date.today())
+                trans_id = c2.text_input("Transaction ID")
+                vehicle = c3.text_input("Vehicle")
+                product = c4.text_input("Product")
 
-        st.dataframe(transactions_df, use_container_width=True, hide_index=True)
+                c5, c6, c7 = st.columns(3)
+                litres = c5.number_input("Litres", value=0.0, step=0.01)
+                debit = c6.number_input("Debit (+)", value=0.0, step=0.01)
+                credit = c7.number_input("Credit (−)", value=0.0, step=0.01)
+
+                add_trans = st.form_submit_button("Add Transaction", use_container_width=True)
+
+                if add_trans:
+                    try:
+                        cur = run_query(conn, """
+                        INSERT INTO ledger_transactions(customer_id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance)
+                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """, (selected_customer, trans_date, trans_id.strip(), vehicle.strip(),
+                              product.strip(), litres, debit, credit, 0))
+                        conn.commit()
+                        cur.close()
+                        recalculate_balances(conn, selected_customer)
+                        st.success("Transaction added")
+                        st.rerun()
+                    except mysql.connector.Error as e:
+                        conn.rollback()
+                        st.error(f"Error: {e}")
+
+        # Transactions table
+        if transactions_df.empty:
+            st.info("No transactions for this customer yet.")
+        else:
+            st.dataframe(transactions_df, use_container_width=True, hide_index=True, height=450)
 
 # =========================
-# DELETE / MANAGE TAB
+# TAB 3 — IMPORT EXCEL
 # =========================
 
 with tab3:
-    st.subheader("Delete Customer")
+    st.markdown("#### 📥 Import Transactions from Excel")
 
     if customers_df.empty:
-        st.warning("No customers available.")
+        st.info("No customers found. Add a customer first.")
     else:
-        delete_customer_name = st.selectbox(
-            "Select Customer to Delete",
-            list(customer_dict.keys()),
-            key="delete_customer_select"
-        )
+        import_customer = st.selectbox("Select Customer to Import Into", list(customer_dict.keys()), key="import_customer")
+        import_customer_id = int(customer_dict[import_customer])
 
-        delete_customer_id = int(customer_dict[delete_customer_name])
+        st.markdown("""
+        <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:12px; padding:16px 20px; margin:12px 0; color:#1e40af; font-size:14px;">
+            <strong>📋 Excel Format Required:</strong><br>
+            Your Excel file should have these columns (header row):<br>
+            <code>date</code> · <code>trans_id</code> · <code>vehicle</code> · <code>product</code> · <code>litres</code> · <code>debit</code> · <code>credit</code><br><br>
+            Column names are flexible — the importer will match common names like
+            <code>Date</code>, <code>Transaction ID</code>, <code>Vehicle No</code>, etc.
+        </div>
+        """, unsafe_allow_html=True)
 
-        if st.button("🗑 Delete Selected Customer"):
+        uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type=["xlsx", "xls"], key="excel_upload")
+
+        if uploaded_file is not None:
             try:
-                cur = run_query(conn, """
-                DELETE FROM customers
-                WHERE customer_id=%s
-                """, (delete_customer_id,))
-                conn.commit()
-                cur.close()
-                st.success("✅ Customer Deleted")
-                st.rerun()
-            except mysql.connector.Error as e:
-                conn.rollback()
-                st.error(f"❌ Error deleting customer: {e}")
+                df = pd.read_excel(uploaded_file)
 
-    st.divider()
+                if df.empty:
+                    st.warning("The uploaded file is empty.")
+                else:
+                    # Normalize column names
+                    col_map = {}
+                    for col in df.columns:
+                        cl = str(col).strip().lower().replace(" ", "_").replace(".", "")
+                        if cl in ("date", "trans_date", "transaction_date"):
+                            col_map[col] = "trans_date"
+                        elif cl in ("trans_id", "transaction_id", "txn_id", "bill_no", "bill"):
+                            col_map[col] = "trans_id"
+                        elif cl in ("vehicle", "vehicle_no", "vehicle_number", "veh"):
+                            col_map[col] = "vehicle"
+                        elif cl in ("product", "item", "fuel", "fuel_type"):
+                            col_map[col] = "product"
+                        elif cl in ("litres", "liters", "ltr", "qty", "quantity"):
+                            col_map[col] = "litres"
+                        elif cl in ("debit", "dr", "amount", "debit_amount"):
+                            col_map[col] = "debit"
+                        elif cl in ("credit", "cr", "payment", "credit_amount"):
+                            col_map[col] = "credit"
 
-    st.subheader("Delete Transaction")
+                    df = df.rename(columns=col_map)
 
-    if customers_df.empty:
-        st.warning("No customers available.")
-    else:
-        manage_customer_name = st.selectbox(
-            "Select Customer",
-            list(customer_dict.keys()),
-            key="manage_customer_select"
+                    # Ensure required columns exist with defaults
+                    for needed in ["trans_date", "trans_id", "vehicle", "product", "litres", "debit", "credit"]:
+                        if needed not in df.columns:
+                            if needed == "trans_date":
+                                df[needed] = date.today()
+                            elif needed in ("litres", "debit", "credit"):
+                                df[needed] = 0.0
+                            else:
+                                df[needed] = ""
+
+                    # Clean data
+                    df["litres"] = pd.to_numeric(df["litres"], errors="coerce").fillna(0.0)
+                    df["debit"] = pd.to_numeric(df["debit"], errors="coerce").fillna(0.0)
+                    df["credit"] = pd.to_numeric(df["credit"], errors="coerce").fillna(0.0)
+                    df["trans_date"] = pd.to_datetime(df["trans_date"], errors="coerce", dayfirst=True).dt.date
+                    df["trans_date"] = df["trans_date"].fillna(date.today())
+                    df["trans_id"] = df["trans_id"].astype(str).replace("nan", "")
+                    df["vehicle"] = df["vehicle"].astype(str).replace("nan", "")
+                    df["product"] = df["product"].astype(str).replace("nan", "")
+
+                    # Preview
+                    preview_df = df[["trans_date", "trans_id", "vehicle", "product", "litres", "debit", "credit"]]
+                    st.markdown(f"**Preview — {len(preview_df)} rows to import for {import_customer}:**")
+                    st.dataframe(preview_df, use_container_width=True, hide_index=True, height=350)
+
+                    col_a, col_b = st.columns([1, 3])
+                    with col_a:
+                        if st.button("✅ Confirm Import", use_container_width=True, type="primary"):
+                            success_count = 0
+                            error_count = 0
+
+                            for _, row in preview_df.iterrows():
+                                try:
+                                    cur = run_query(conn, """
+                                    INSERT INTO ledger_transactions(customer_id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance)
+                                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                    """, (
+                                        import_customer_id,
+                                        row["trans_date"],
+                                        str(row["trans_id"]).strip(),
+                                        str(row["vehicle"]).strip(),
+                                        str(row["product"]).strip(),
+                                        float(row["litres"]),
+                                        float(row["debit"]),
+                                        float(row["credit"]),
+                                        0
+                                    ))
+                                    cur.close()
+                                    success_count += 1
+                                except mysql.connector.Error:
+                                    error_count += 1
+
+                            conn.commit()
+                            recalculate_balances(conn, import_customer_id)
+
+                            if error_count == 0:
+                                st.success(f"✅ Successfully imported {success_count} transactions!")
+                            else:
+                                st.warning(f"Imported {success_count} rows, {error_count} failed.")
+                            st.rerun()
+
+            except Exception as e:
+                st.error(f"Error reading Excel file: {e}")
+
+        # Download template
+        st.markdown("---")
+        st.markdown("**Need a template?** Download a sample Excel file:")
+        template_df = pd.DataFrame({
+            "date": [date.today()],
+            "trans_id": ["TXN001"],
+            "vehicle": ["TN01AB1234"],
+            "product": ["Diesel"],
+            "litres": [50.0],
+            "debit": [4500.00],
+            "credit": [0.00]
+        })
+        buffer = BytesIO()
+        template_df.to_excel(buffer, index=False, engine="openpyxl")
+        st.download_button(
+            "📄 Download Template",
+            data=buffer.getvalue(),
+            file_name="import_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
-        manage_customer_id = int(customer_dict[manage_customer_name])
-
-        trans_df = get_transactions(conn, manage_customer_id)
-
-        st.dataframe(trans_df, use_container_width=True, hide_index=True)
-
-        delete_trans_id = st.number_input(
-            "Enter Transaction DB ID to Delete",
-            min_value=0,
-            step=1
-        )
-
-        if st.button("🗑 Delete Transaction"):
-            try:
-                cur = run_query(conn, """
-                DELETE FROM ledger_transactions
-                WHERE id=%s
-                """, (delete_trans_id,))
-                conn.commit()
-                cur.close()
-                recalculate_balances(conn, manage_customer_id)
-                st.success("✅ Transaction Deleted")
-                st.rerun()
-            except mysql.connector.Error as e:
-                conn.rollback()
-                st.error(f"❌ Error deleting transaction: {e}")
 
 # =========================
-# SIDEBAR — LOGOUT
+# TAB 4 — MANAGE / DELETE
+# =========================
+
+with tab4:
+    if customers_df.empty:
+        st.info("No customers available.")
+    else:
+        col_del_cust, col_del_trans = st.columns(2)
+
+        with col_del_cust:
+            st.markdown("#### 🗑 Delete Customer")
+            del_cust_name = st.selectbox("Select Customer", list(customer_dict.keys()), key="del_cust")
+            del_cust_id = int(customer_dict[del_cust_name])
+
+            st.caption("⚠️ This will delete all transactions for this customer.")
+            if st.button("Delete Customer", key="btn_del_cust"):
+                try:
+                    cur = run_query(conn, "DELETE FROM customers WHERE customer_id=%s", (del_cust_id,))
+                    conn.commit()
+                    cur.close()
+                    st.success(f"Deleted **{del_cust_name}**")
+                    st.rerun()
+                except mysql.connector.Error as e:
+                    conn.rollback()
+                    st.error(f"Error: {e}")
+
+        with col_del_trans:
+            st.markdown("#### 🗑 Delete Transaction")
+            manage_name = st.selectbox("Select Customer", list(customer_dict.keys()), key="manage_cust")
+            manage_id = int(customer_dict[manage_name])
+
+            trans_df = get_transactions(conn, manage_id)
+
+            if trans_df.empty:
+                st.info("No transactions for this customer.")
+            else:
+                st.dataframe(trans_df[["id", "trans_date", "trans_id", "debit", "credit"]],
+                             use_container_width=True, hide_index=True, height=250)
+
+                del_trans_id = st.number_input("Transaction DB ID", min_value=0, step=1, key="del_trans_id")
+
+                if st.button("Delete Transaction", key="btn_del_trans"):
+                    try:
+                        cur = run_query(conn, "DELETE FROM ledger_transactions WHERE id=%s", (del_trans_id,))
+                        conn.commit()
+                        cur.close()
+                        recalculate_balances(conn, manage_id)
+                        st.success("Transaction deleted")
+                        st.rerun()
+                    except mysql.connector.Error as e:
+                        conn.rollback()
+                        st.error(f"Error: {e}")
+
+# =========================
+# SIDEBAR
 # =========================
 
 with st.sidebar:
+    st.markdown("### ⛽ AA ENTERPRISES")
+    st.caption("Sales Ledger System")
     st.markdown("---")
-    if st.button("🚪 Logout"):
+    if st.button("🚪 Logout", use_container_width=True):
         st.session_state.authenticated = False
         st.rerun()
