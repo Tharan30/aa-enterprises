@@ -297,9 +297,17 @@ def get_google_sheet():
     try:
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-        if "gcp_service_account" in st.secrets:
+        if "gcp_json_key" in st.secrets:
+            # Handles raw JSON string directly
+            creds_info = json.loads(st.secrets["gcp_json_key"])
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        elif "gcp_service_account" in st.secrets:
             creds_info = dict(st.secrets["gcp_service_account"])
-            # Format escaped newlines in private key if needed
+            if "private_key" in creds_info:
+                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        elif "google_creds" in st.secrets:
+            creds_info = dict(st.secrets["google_creds"])
             if "private_key" in creds_info:
                 creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
             creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
@@ -312,7 +320,6 @@ def get_google_sheet():
         sheet_id = st.secrets.get("google_sheet_id", "1C_SZGXkWEpmmH_UojnOStyxXRUAWOVhoo7-U8mI9lnQ")
         return client.open_by_key(sheet_id)
     except Exception as e:
-        # Fails gracefully without stopping the app if Google API is offline
         return None
 
 
