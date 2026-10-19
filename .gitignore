@@ -16,3 +16,7 @@ Thumbs.db
 
 # Backup scripts (local only)
 Backup/
+
+# Google Credentials & Test Scripts
+google_creds.json
+test_gspread.py

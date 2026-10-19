@@ -3,6 +3,9 @@ import mysql.connector
 import pandas as pd
 from datetime import date
 from io import BytesIO
+import json
+import gspread
+from google.oauth2.service_account import Credentials
 
 # =========================
 # PAGE CONFIG
@@ -286,6 +289,69 @@ except mysql.connector.Error:
         pass
 
 # =========================
+# GOOGLE SHEETS LIVE SYNC
+# =========================
+
+def get_google_sheet():
+    """Connect to Google Sheet using secrets or local google_creds.json."""
+    try:
+        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+
+        if "gcp_service_account" in st.secrets:
+            creds_info = dict(st.secrets["gcp_service_account"])
+            # Format escaped newlines in private key if needed
+            if "private_key" in creds_info:
+                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        else:
+            with open("google_creds.json", "r") as f:
+                creds_info = json.load(f)
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+
+        client = gspread.authorize(creds)
+        sheet_id = st.secrets.get("google_sheet_id", "1C_SZGXkWEpmmH_UojnOStyxXRUAWOVhoo7-U8mI9lnQ")
+        return client.open_by_key(sheet_id)
+    except Exception as e:
+        # Fails gracefully without stopping the app if Google API is offline
+        return None
+
+
+def sync_to_google_sheet(customer_name, rows_to_append):
+    """
+    Appends rows to the dedicated customer worksheet in Google Sheets.
+    Each customer gets their own separate worksheet tab (named after customer).
+    rows_to_append: list of [Date, Txn_ID, Vehicle, Product, Litres, Debit, Credit, Running_Balance]
+    """
+    try:
+        sheet = get_google_sheet()
+        if not sheet or not rows_to_append:
+            return
+
+        # Sanitize customer name for tab title (max 30 chars, no illegal characters)
+        tab_name = "".join(c for c in customer_name if c not in r'/\?*[]:').strip()[:30]
+        if not tab_name:
+            tab_name = "Customer"
+
+        # Find or create worksheet for this specific customer
+        existing_titles = [ws.title for ws in sheet.worksheets()]
+        if tab_name in existing_titles:
+            worksheet = sheet.worksheet(tab_name)
+        else:
+            worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=10)
+            # Add header row
+            worksheet.append_row([
+                "Date", "Transaction ID", "Vehicle", "Product",
+                "Litres", "Debit (₹)", "Credit (₹)", "Balance (₹)"
+            ])
+
+        # Batch append rows
+        worksheet.append_rows(rows_to_append, value_input_option="USER_ENTERED")
+    except Exception as e:
+        # Non-blocking: logs error without interrupting user workflow
+        pass
+
+
+# =========================
 # HELPER FUNCTIONS
 # =========================
 
@@ -482,7 +548,22 @@ with tab2:
                         conn.commit()
                         cur.close()
                         recalculate_balances(conn, selected_customer)
-                        st.success("Transaction added")
+
+                        # Auto-append to dedicated customer worksheet in Google Sheets
+                        updated_txns = get_transactions(conn, selected_customer)
+                        curr_balance = updated_txns["balance"].iloc[-1] if not updated_txns.empty else 0.0
+                        sync_to_google_sheet(selected_name, [[
+                            str(trans_date),
+                            trans_id.strip(),
+                            vehicle.strip(),
+                            product.strip(),
+                            litres,
+                            debit,
+                            credit,
+                            curr_balance
+                        ]])
+
+                        st.success("Transaction added & synced to Google Sheets!")
                         st.rerun()
                     except mysql.connector.Error as e:
                         conn.rollback()
@@ -688,7 +769,24 @@ with tab3:
                                 insert_cur.close()
 
                                 recalculate_balances(conn, import_customer_id)
-                                st.success(f"✅ Successfully imported {len(records_to_insert)} transactions!")
+
+                                # Auto-sync batch import to Google Sheets dedicated customer tab
+                                updated_txns = get_transactions(conn, import_customer_id)
+                                gsheet_rows = []
+                                for _, r in updated_txns.tail(len(records_to_insert)).iterrows():
+                                    gsheet_rows.append([
+                                        str(r["trans_date"]),
+                                        str(r["trans_id"]),
+                                        str(r["vehicle"]),
+                                        str(r["product"]),
+                                        float(r["litres"]),
+                                        float(r["debit"]),
+                                        float(r["credit"]),
+                                        float(r["balance"])
+                                    ])
+                                sync_to_google_sheet(import_customer, gsheet_rows)
+
+                                st.success(f"✅ Successfully imported {len(records_to_insert)} transactions and synced to Google Sheets!")
                                 st.rerun()
                             except mysql.connector.Error as e:
                                 conn.rollback()
