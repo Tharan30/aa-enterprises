@@ -290,7 +290,7 @@ except mysql.connector.Error:
 # =========================
 
 def recalculate_balances(conn, customer_id):
-    """Recalculate running balances for a customer."""
+    """Recalculate running balances for a customer efficiently in one transaction."""
     cur = run_query(conn, """
     SELECT id, debit, credit FROM ledger_transactions
     WHERE customer_id=%s ORDER BY trans_date ASC, id ASC
@@ -298,13 +298,25 @@ def recalculate_balances(conn, customer_id):
     rows = cur.fetchall()
     cur.close()
 
+    if not rows:
+        return
+
     running = 0.0
+    update_cur = conn.cursor()
     for row in rows:
-        running += float(row[1] or 0) + float(row[2] or 0)
-        c = run_query(conn, "UPDATE ledger_transactions SET balance=%s WHERE id=%s",
-                      (round(running, 2), row[0]))
-        c.close()
+        row_id = row[0]
+        debit = float(row[1] or 0)
+        credit = float(row[2] or 0)
+
+        # Debit increases payable balance, Credit reduces payable balance
+        running += (debit - credit)
+
+        update_cur.execute(
+            "UPDATE ledger_transactions SET balance=%s WHERE id=%s",
+            (round(running, 2), row_id)
+        )
     conn.commit()
+    update_cur.close()
 
 
 def get_customers(conn):
@@ -651,38 +663,36 @@ with tab3:
                     col_a, col_b = st.columns([1, 3])
                     with col_a:
                         if st.button("✅ Confirm Import", use_container_width=True, type="primary"):
-                            success_count = 0
-                            error_count = 0
+                            records_to_insert = [
+                                (
+                                    import_customer_id,
+                                    row["trans_date"],
+                                    str(row["trans_id"]).strip(),
+                                    str(row["vehicle"]).strip(),
+                                    str(row["product"]).strip(),
+                                    float(row["litres"]),
+                                    float(row["debit"]),
+                                    float(row["credit"]),
+                                    0
+                                )
+                                for _, row in preview_df.iterrows()
+                            ]
 
-                            for _, row in preview_df.iterrows():
-                                try:
-                                    cur = run_query(conn, """
-                                    INSERT INTO ledger_transactions(customer_id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance)
-                                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                                    """, (
-                                        import_customer_id,
-                                        row["trans_date"],
-                                        str(row["trans_id"]).strip(),
-                                        str(row["vehicle"]).strip(),
-                                        str(row["product"]).strip(),
-                                        float(row["litres"]),
-                                        float(row["debit"]),
-                                        float(row["credit"]),
-                                        0
-                                    ))
-                                    cur.close()
-                                    success_count += 1
-                                except mysql.connector.Error:
-                                    error_count += 1
+                            try:
+                                insert_cur = conn.cursor()
+                                insert_cur.executemany("""
+                                INSERT INTO ledger_transactions(customer_id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance)
+                                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                """, records_to_insert)
+                                conn.commit()
+                                insert_cur.close()
 
-                            conn.commit()
-                            recalculate_balances(conn, import_customer_id)
-
-                            if error_count == 0:
-                                st.success(f"✅ Successfully imported {success_count} transactions!")
-                            else:
-                                st.warning(f"Imported {success_count} rows, {error_count} failed.")
-                            st.rerun()
+                                recalculate_balances(conn, import_customer_id)
+                                st.success(f"✅ Successfully imported {len(records_to_insert)} transactions!")
+                                st.rerun()
+                            except mysql.connector.Error as e:
+                                conn.rollback()
+                                st.error(f"❌ Error during import: {e}")
 
             except Exception as e:
                 st.error(f"Error reading Excel file: {e}")
