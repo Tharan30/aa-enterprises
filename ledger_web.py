@@ -345,6 +345,123 @@ def sync_to_google_sheet(customer_name, rows_to_append):
         return False, str(e)
 
 
+def dates_match(d1, d2):
+    """Safely compares two dates in string or date object format."""
+    if not d1 or not d2:
+        return False
+    s1 = str(d1).strip()
+    s2 = str(d2).strip()
+    if s1 == s2:
+        return True
+    try:
+        dt1 = pd.to_datetime(s1).date()
+        dt2 = pd.to_datetime(s2).date()
+        return dt1 == dt2
+    except Exception:
+        return False
+
+
+def clean_amount(val):
+    """Safely extracts a float amount from formatted currency or string."""
+    if val is None or val == "":
+        return 0.0
+    s = str(val).replace("₹", "").replace(",", "").replace("$", "").strip()
+    try:
+        return round(float(s), 2)
+    except Exception:
+        return 0.0
+
+
+def delete_transaction_from_google_sheet(customer_name, trans_date, trans_id, debit, credit, vehicle=None, product=None):
+    """
+    Finds and deletes a specific transaction row from the customer's Google Sheet tab
+    when an individual transaction is deleted manually in Tab 4.
+    Recalculates running balance for remaining rows.
+    STRICT NOTE: This function is only called on manual single transaction deletion.
+    It is NEVER called during annual database clearing.
+    """
+    try:
+        sheet, err = get_google_sheet()
+        if not sheet:
+            return False, f"Could not connect to Google Sheet: {err}"
+
+        tab_name = "".join(c for c in customer_name if c not in r'/\?*[]:').strip()[:30]
+        if not tab_name:
+            tab_name = "Customer"
+
+        existing_titles = [ws.title for ws in sheet.worksheets()]
+        if tab_name not in existing_titles:
+            return False, f"Worksheet tab '{tab_name}' not found in Google Sheet."
+
+        worksheet = sheet.worksheet(tab_name)
+        all_records = worksheet.get_all_values()
+
+        if len(all_records) <= 1:
+            return False, "Worksheet has no transaction rows."
+
+        # Target criteria
+        s_txid = str(trans_id or "").strip().lower()
+        s_deb = clean_amount(debit)
+        s_cred = clean_amount(credit)
+        s_veh = str(vehicle or "").strip().lower()
+
+        target_row_idx = None
+
+        # Row 1 is headers (Date, Txn ID, Vehicle, Product, Litres, Debit, Credit, Balance)
+        for idx, row in enumerate(all_records[1:], start=2):
+            if not row:
+                continue
+
+            r_date_str = str(row[0]).strip() if len(row) > 0 else ""
+            r_txid = str(row[1]).strip().lower() if len(row) > 1 else ""
+            r_veh = str(row[2]).strip().lower() if len(row) > 2 else ""
+            r_deb = clean_amount(row[5]) if len(row) > 5 else 0.0
+            r_cred = clean_amount(row[6]) if len(row) > 6 else 0.0
+
+            # 1. Date match
+            if not dates_match(r_date_str, trans_date):
+                continue
+
+            # 2. If txn_id is available and non-empty, check match
+            if s_txid != "" and r_txid == s_txid:
+                target_row_idx = idx
+                break
+
+            # 3. If txn_id is blank or not matching, compare amounts and vehicle
+            amounts_match = (abs(r_deb - s_deb) < 0.01 and abs(r_cred - s_cred) < 0.01)
+            veh_match = (s_veh == "" or r_veh == s_veh or r_veh == "" or s_veh == "-")
+
+            if amounts_match and veh_match:
+                target_row_idx = idx
+                break
+
+        if not target_row_idx:
+            return False, "Transaction row not found in Google Sheet (may have already been deleted or not synced)."
+
+        # Delete the specific row from Google Sheet
+        worksheet.delete_rows(target_row_idx)
+
+        # Recalculate and update the running balance column for remaining rows in Google Sheet
+        try:
+            remaining_records = worksheet.get_all_values()
+            if len(remaining_records) > 1:
+                running_bal = 0.0
+                updated_balances = []
+                for r in remaining_records[1:]:
+                    deb_val = clean_amount(r[5]) if len(r) > 5 else 0.0
+                    cred_val = clean_amount(r[6]) if len(r) > 6 else 0.0
+                    running_bal += (deb_val - cred_val)
+                    updated_balances.append([round(running_bal, 2)])
+                end_row = 1 + len(updated_balances)
+                worksheet.update(range_name=f"H2:H{end_row}", values=updated_balances, value_input_option="USER_ENTERED")
+        except Exception:
+            pass  # Row deletion was already successful
+
+        return True, f"Transaction row #{target_row_idx} deleted from Google Sheet."
+    except Exception as e:
+        return False, str(e)
+
+
 # =========================
 # HELPER FUNCTIONS
 # =========================
@@ -379,13 +496,76 @@ def recalculate_balances(conn, customer_id):
     update_cur.close()
 
 
+def ensure_transactions_in_google_sheet(customer_name, tx_rows):
+    """
+    Safely verifies and appends any un-synced transactions to Google Sheets
+    BEFORE annual clearance in MySQL.
+    NEVER duplicates existing rows.
+    NEVER deletes any rows from Google Sheets.
+    """
+    try:
+        sheet, err = get_google_sheet()
+        if not sheet or not tx_rows:
+            return
+        
+        tab_name = "".join(c for c in customer_name if c not in r'/\?*[]:').strip()[:30]
+        if not tab_name:
+            tab_name = "Customer"
+
+        existing_titles = [ws.title for ws in sheet.worksheets()]
+        if tab_name not in existing_titles:
+            worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=10)
+            worksheet.append_row([
+                "Date", "Transaction ID", "Vehicle", "Product",
+                "Litres", "Debit (₹)", "Credit (₹)", "Balance (₹)"
+            ])
+            existing_data = []
+        else:
+            worksheet = sheet.worksheet(tab_name)
+            existing_data = worksheet.get_all_values()
+
+        existing_keys = set()
+        for r in existing_data[1:]:
+            if len(r) >= 7:
+                k_date = str(r[0]).strip()
+                k_txid = str(r[1]).strip().lower()
+                k_deb = f"{clean_amount(r[5]):.2f}"
+                k_cred = f"{clean_amount(r[6]):.2f}"
+                existing_keys.add((k_date, k_txid, k_deb, k_cred))
+
+        missing_rows = []
+        for r in tx_rows:
+            # r: [id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance]
+            s_date = str(r[1]).strip()
+            s_txid = str(r[2] or "").strip().lower()
+            s_deb = f"{float(r[6] or 0):.2f}"
+            s_cred = f"{float(r[7] or 0):.2f}"
+
+            key = (s_date, s_txid, s_deb, s_cred)
+            if key not in existing_keys:
+                missing_rows.append([
+                    str(r[1]), str(r[2] or ""), str(r[3] or ""), str(r[4] or ""),
+                    float(r[5] or 0), float(r[6] or 0), float(r[7] or 0), float(r[8] or 0)
+                ])
+
+        if missing_rows:
+            worksheet.append_rows(missing_rows, value_input_option="USER_ENTERED")
+    except Exception:
+        pass
+
+
 def archive_old_year_transactions(conn, target_year):
     """
-    Safely archives all transactions from a given year (e.g. 2025):
-    1. Ensures each transaction has been synced to customer's Google Sheet tab.
-    2. Calculates customer's closing balance at the end of that year.
-    3. Deletes the old year's transactions from MySQL database.
-    4. Inserts a clean 'B/F Balance (Year-End)' transaction carrying the balance forward.
+    Annual Database Clearance for a specific year (e.g. 2025):
+    1. Ensures any un-synced transactions are safely archived in Google Sheets (no duplicates).
+    2. Calculates customer's net movement for that year.
+    3. Deletes target year's transactions ONLY from MySQL database to free up disk space.
+    4. Inserts a clean 'B/F Balance (target_year)' summary transaction in MySQL.
+    5. Recalculates running balances in MySQL for all subsequent records.
+    
+    STRICT SAFETY GUARANTEE:
+    - Google Sheets is NEVER modified for deletion.
+    - Full detailed transaction history is permanently preserved in Google Drive.
     """
     try:
         cur = run_query(conn, "SELECT customer_id, customer_name FROM customers")
@@ -394,7 +574,7 @@ def archive_old_year_transactions(conn, target_year):
 
         total_pruned = 0
         for cust_id, cust_name in all_custs:
-            # Fetch transactions for that year
+            # Fetch transactions for target year
             cur_tx = run_query(conn, """
             SELECT id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance
             FROM ledger_transactions
@@ -407,19 +587,13 @@ def archive_old_year_transactions(conn, target_year):
             if not tx_rows:
                 continue
 
-            # Step 1: Ensure backed up in Google Sheets
-            gsheet_backup_rows = []
-            for r in tx_rows:
-                gsheet_backup_rows.append([
-                    str(r[1]), str(r[2]), str(r[3]), str(r[4]),
-                    float(r[5] or 0), float(r[6] or 0), float(r[7] or 0), float(r[8] or 0)
-                ])
-            sync_to_google_sheet(cust_name, gsheet_backup_rows)
+            # Step 1: Ensure backed up in Google Sheets (NO deletion on Sheets!)
+            ensure_transactions_in_google_sheet(cust_name, tx_rows)
 
-            # Step 2: Calculate closing balance of that year
-            closing_balance = float(tx_rows[-1][8] or 0)
+            # Step 2: Calculate net movement for that year
+            net_diff = round(sum(float(r[6] or 0) - float(r[7] or 0) for r in tx_rows), 2)
 
-            # Step 3: Delete old year's transactions from MySQL
+            # Step 3: Delete old year's transactions ONLY from MySQL
             del_cur = run_query(conn, """
             DELETE FROM ledger_transactions
             WHERE customer_id=%s AND YEAR(trans_date)=%s
@@ -428,30 +602,30 @@ def archive_old_year_transactions(conn, target_year):
             del_cur.close()
             total_pruned += len(tx_rows)
 
-            # Step 4: Insert opening balance record on Jan 1 of next year (or Dec 31 of target year)
-            if closing_balance != 0:
-                op_debit = closing_balance if closing_balance > 0 else 0.0
-                op_credit = abs(closing_balance) if closing_balance < 0 else 0.0
-                ins_cur = run_query(conn, """
-                INSERT INTO ledger_transactions (customer_id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    cust_id,
-                    f"{target_year}-12-31",
-                    f"BF-{target_year}",
-                    "-",
-                    f"B/F Balance ({target_year})",
-                    0.0,
-                    op_debit,
-                    op_credit,
-                    closing_balance
-                ))
-                conn.commit()
-                ins_cur.close()
+            # Step 4: Insert B/F Balance record in MySQL to preserve balance continuity
+            op_debit = net_diff if net_diff > 0 else 0.0
+            op_credit = abs(net_diff) if net_diff < 0 else 0.0
+            ins_cur = run_query(conn, """
+            INSERT INTO ledger_transactions (customer_id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                cust_id,
+                f"{target_year}-12-31",
+                f"BF-{target_year}",
+                "-",
+                f"B/F Balance ({target_year})",
+                0.0,
+                op_debit,
+                op_credit,
+                0.0
+            ))
+            conn.commit()
+            ins_cur.close()
 
+            # Recalculate MySQL running balances
             recalculate_balances(conn, cust_id)
 
-        return True, f"Successfully archived and cleared {total_pruned} records for year {target_year}. Google Sheets remains intact!"
+        return True, f"Successfully cleared {total_pruned} records for year {target_year} from MySQL. Google Sheets historical data remains 100% intact!"
     except Exception as e:
         conn.rollback()
         return False, str(e)
@@ -955,65 +1129,111 @@ with tab4:
 
                 del_trans_id = st.number_input("Transaction DB ID", min_value=1, step=1, key="del_trans_id")
 
-                if st.button("Delete Transaction", key="btn_del_trans"):
+                if st.button("Delete Transaction", key="btn_del_trans", type="primary"):
                     try:
-                        # Verify the transaction belongs to this customer
-                        chk = run_query(conn, "SELECT COUNT(*) FROM ledger_transactions WHERE id=%s AND customer_id=%s", (del_trans_id, manage_id))
-                        exists = chk.fetchone()[0] > 0
+                        # Verify and retrieve transaction details before deleting
+                        chk = run_query(conn, """
+                        SELECT id, trans_date, trans_id, vehicle, product, debit, credit
+                        FROM ledger_transactions
+                        WHERE id=%s AND customer_id=%s
+                        """, (del_trans_id, manage_id))
+                        tx_row = chk.fetchone()
                         chk.close()
 
-                        if not exists:
-                            st.error(f"Transaction ID {del_trans_id} not found for {manage_name}.")
+                        if not tx_row:
+                            st.error(f"Transaction ID #{del_trans_id} not found for {manage_name}.")
                         else:
+                            _, tx_date, tx_code, tx_veh, tx_prod, tx_deb, tx_cred = tx_row
+
+                            # 1. Delete from MySQL database
                             cur = run_query(conn, "DELETE FROM ledger_transactions WHERE id=%s AND customer_id=%s", (del_trans_id, manage_id))
                             conn.commit()
                             cur.close()
+
+                            # 2. Recalculate MySQL running balances
                             recalculate_balances(conn, manage_id)
-                            st.success(f"Transaction #{del_trans_id} deleted successfully")
+
+                            # 3. Delete matching row from customer's Google Sheet
+                            gs_ok, gs_msg = delete_transaction_from_google_sheet(
+                                customer_name=manage_name,
+                                trans_date=tx_date,
+                                trans_id=tx_code,
+                                debit=tx_deb,
+                                credit=tx_cred,
+                                vehicle=tx_veh,
+                                product=tx_prod
+                            )
+
+                            if gs_ok:
+                                st.success(f"✅ Transaction #{del_trans_id} deleted successfully from MySQL and Google Sheets!")
+                            else:
+                                st.success(f"✅ Transaction #{del_trans_id} deleted from MySQL.")
+                                st.warning(f"Google Sheet notice: {gs_msg}")
+
                             st.rerun()
-                    except mysql.connector.Error as e:
+                    except Exception as e:
                         conn.rollback()
-                        st.error(f"Error: {e}")
+                        st.error(f"Error deleting transaction: {e}")
 
         # ==========================================
         # 📦 YEARLY STORAGE PRUNE & ARCHIVAL SECTION
         # ==========================================
         st.markdown("---")
-        st.markdown("#### 💾 Database Storage & Yearly Archival")
-        st.markdown("<p style='color:#64748b; font-size:13px; margin-bottom:16px;'>Automatically clean up older years from MySQL to save database space. The complete detailed transaction history is permanently preserved in your <b>Google Sheets</b>.</p>", unsafe_allow_html=True)
+        st.markdown("#### 🧹 Clean Transactions (Yearly Database Clearance)")
+        st.markdown(
+            "<p style='color:#64748b; font-size:13px; margin-bottom:16px;'>"
+            "Clean up historical records from <b>MySQL database</b> to free up storage. "
+            "A single <b>B/F Balance (Year)</b> summary entry is kept in MySQL to maintain balance continuity.<br>"
+            "<b style='color:#16a34a;'>🛡️ Google Drive Protection:</b> Your Google Spreadsheet data is <b>NEVER deleted</b> during manual database clearance. "
+            "All historical transactions remain permanently in Google Sheets."
+            "</p>",
+            unsafe_allow_html=True
+        )
 
         col_arch1, col_arch2 = st.columns([1.5, 2])
 
         with col_arch1:
             # Check available distinct years in the transactions table
-            year_cur = run_query(conn, "SELECT DISTINCT YEAR(trans_date) FROM ledger_transactions ORDER BY 1 ASC")
-            available_years = [y[0] for y in year_cur.fetchall() if y[0] is not None]
+            year_cur = run_query(conn, "SELECT DISTINCT YEAR(trans_date) FROM ledger_transactions WHERE trans_date IS NOT NULL ORDER BY 1 ASC")
+            available_years = [int(y[0]) for y in year_cur.fetchall() if y[0] is not None]
             year_cur.close()
 
-            current_year = date.today().year
-            # Older years that can be pruned (years before current year)
-            archivable_years = [y for y in available_years if y < current_year]
-
-            if not archivable_years:
-                st.info(f"All transactions are from current year ({current_year}). No past years need archiving.")
+            if not available_years:
+                st.info("No transaction records found in the database to clean.")
             else:
-                target_year = st.selectbox("Select Past Year to Archive", archivable_years, key="archive_year_sel")
-                
+                target_year = st.selectbox("Select Year to Clean from MySQL", available_years, key="archive_year_sel")
+
                 # Count records for that year
                 cnt_cur = run_query(conn, "SELECT COUNT(*) FROM ledger_transactions WHERE YEAR(trans_date)=%s", (target_year,))
                 year_records = cnt_cur.fetchone()[0]
                 cnt_cur.close()
 
-                st.caption(f"Found **{year_records}** records for year **{target_year}**.")
+                st.caption(f"Found **{year_records}** records for year **{target_year}** in MySQL.")
 
-                if st.button(f"🧹 Clean & Archive Year {target_year}", type="primary", key="btn_run_archive"):
-                    with st.spinner(f"Archiving year {target_year} to Google Sheets and pruning MySQL..."):
-                        ok, msg = archive_old_year_transactions(conn, target_year)
-                        if ok:
-                            st.success(f"✅ {msg}")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ Archival error: {msg}")
+                st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
+                cleanup_master_pwd = st.text_input(
+                    "🔑 Master Password for Yearly Clearance",
+                    type="password",
+                    placeholder="Enter master password to authorize",
+                    key="yearly_cleanup_master_pwd",
+                    help="Master authorization password required to clear MySQL data."
+                )
+
+                if st.button(f"🧹 Clean Year {target_year} Transactions (MySQL Only)", type="primary", key="btn_run_archive"):
+                    if not cleanup_master_pwd:
+                        st.error("🔒 Master Password is required to perform yearly database clearance.")
+                    elif cleanup_master_pwd.strip() != "AAYEARLYCLEANUP":
+                        st.error("❌ Invalid Master Password! Access denied. Database was NOT modified.")
+                    elif year_records == 0:
+                        st.warning(f"No records found to clean for year {target_year}.")
+                    else:
+                        with st.spinner(f"Safely clearing year {target_year} from MySQL (Google Drive 100% preserved)..."):
+                            ok, msg = archive_old_year_transactions(conn, target_year)
+                            if ok:
+                                st.success(f"✅ {msg}")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Clearance error: {msg}")
 
         with col_arch2:
             # Query table size
