@@ -20,9 +20,41 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-/* ---- Global ---- */
+/* ---- Global & Typography ---- */
 .stApp {
     background-color: #f8fafc;
+    color: #1e293b;
+}
+
+/* Force dark readable text on all standard headings, labels, and captions */
+h1, h2, h3, h4, h5, h6, p, label, .stMarkdown, .stCaption {
+    color: #1e293b !important;
+}
+
+/* Form input labels & text */
+div[data-testid="stWidgetLabel"] label, div[data-testid="stWidgetLabel"] p {
+    color: #334155 !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+}
+
+/* Input boxes & select boxes styling */
+input, select, textarea, div[data-baseweb="select"] {
+    color: #0f172a !important;
+    background-color: #ffffff !important;
+}
+
+/* Expander styling in light mode */
+div[data-testid="stExpander"] {
+    background-color: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 12px !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04) !important;
+}
+
+div[data-testid="stExpander"] details summary span {
+    color: #1e293b !important;
+    font-weight: 700 !important;
 }
 
 .block-container {
@@ -40,13 +72,13 @@ st.markdown("""
 .app-title {
     font-size: 38px;
     font-weight: 800;
-    color: #1e293b;
+    color: #1e293b !important;
     margin: 0;
     letter-spacing: -0.5px;
 }
 
 .app-subtitle {
-    color: #64748b;
+    color: #64748b !important;
     font-size: 15px;
     margin-top: 4px;
 }
@@ -70,7 +102,7 @@ st.markdown("""
 .m-card .label {
     font-size: 13px;
     font-weight: 600;
-    color: #94a3b8;
+    color: #64748b !important;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
@@ -78,35 +110,13 @@ st.markdown("""
 .m-card .value {
     font-size: 28px;
     font-weight: 800;
-    color: #0f172a;
     margin-top: 4px;
 }
 
-.m-card.blue  .value { color: #2563eb; }
-.m-card.green .value { color: #16a34a; }
-.m-card.red   .value { color: #dc2626; }
-.m-card.amber .value { color: #d97706; }
-
-/* ---- Section Card ---- */
-.section-card {
-    background: white;
-    border-radius: 16px;
-    padding: 28px;
-    border: 1px solid #e2e8f0;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-    margin-bottom: 20px;
-}
-
-/* ---- Balance Banner ---- */
-.balance-banner {
-    background: linear-gradient(135deg, #2563eb, #3b82f6);
-    color: white;
-    padding: 18px 28px;
-    border-radius: 14px;
-    font-size: 22px;
-    font-weight: 700;
-    margin-bottom: 16px;
-}
+.m-card.blue  .value { color: #2563eb !important; }
+.m-card.green .value { color: #16a34a !important; }
+.m-card.red   .value { color: #dc2626 !important; }
+.m-card.amber .value { color: #d97706 !important; }
 
 /* ---- Tabs ---- */
 .stTabs [data-baseweb="tab-list"] {
@@ -121,25 +131,25 @@ st.markdown("""
     border-radius: 10px;
     padding: 10px 20px;
     font-weight: 600;
-    color: #64748b;
+    color: #475569 !important;
 }
 
 .stTabs [data-baseweb="tab"][aria-selected="true"] {
     background: #2563eb;
-    color: white;
+    color: #ffffff !important;
 }
 
 /* ---- Buttons ---- */
 .stButton>button {
     border-radius: 10px;
     font-weight: 600;
-    border: none;
+    border: 1px solid #cbd5e1;
     padding: 8px 20px;
 }
 
 .stFormSubmitButton>button {
-    background: #2563eb;
-    color: white;
+    background: #2563eb !important;
+    color: white !important;
     border-radius: 10px;
     font-weight: 600;
     height: 42px;
@@ -147,32 +157,36 @@ st.markdown("""
 }
 
 .stFormSubmitButton>button:hover {
-    background: #1d4ed8;
-    color: white;
+    background: #1d4ed8 !important;
+    color: white !important;
 }
 
 /* ---- Sidebar ---- */
 [data-testid="stSidebar"] {
-    background-color: #ffffff;
+    background-color: #ffffff !important;
     border-right: 1px solid #e2e8f0;
 }
 
-/* ---- Dataframe ---- */
+/* ---- Dataframe & Tables ---- */
 .stDataFrame {
     border-radius: 12px;
     overflow: hidden;
+    border: 1px solid #e2e8f0;
+    background: #ffffff;
 }
 
 /* ---- Upload area ---- */
 [data-testid="stFileUploader"] {
-    background: #f1f5f9;
+    background: #ffffff;
+    border: 1px dashed #cbd5e1;
     border-radius: 12px;
-    padding: 8px;
+    padding: 12px;
 }
 
 /* ---- Form inputs ---- */
 .stTextInput>div>div>input, .stNumberInput>div>div>input, .stSelectbox>div>div {
     border-radius: 8px;
+    border-color: #cbd5e1;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -716,16 +730,24 @@ with tab4:
                 st.dataframe(trans_df[["id", "trans_date", "trans_id", "debit", "credit"]],
                              use_container_width=True, hide_index=True, height=250)
 
-                del_trans_id = st.number_input("Transaction DB ID", min_value=0, step=1, key="del_trans_id")
+                del_trans_id = st.number_input("Transaction DB ID", min_value=1, step=1, key="del_trans_id")
 
                 if st.button("Delete Transaction", key="btn_del_trans"):
                     try:
-                        cur = run_query(conn, "DELETE FROM ledger_transactions WHERE id=%s", (del_trans_id,))
-                        conn.commit()
-                        cur.close()
-                        recalculate_balances(conn, manage_id)
-                        st.success("Transaction deleted")
-                        st.rerun()
+                        # Verify the transaction belongs to this customer
+                        chk = run_query(conn, "SELECT COUNT(*) FROM ledger_transactions WHERE id=%s AND customer_id=%s", (del_trans_id, manage_id))
+                        exists = chk.fetchone()[0] > 0
+                        chk.close()
+
+                        if not exists:
+                            st.error(f"Transaction ID {del_trans_id} not found for {manage_name}.")
+                        else:
+                            cur = run_query(conn, "DELETE FROM ledger_transactions WHERE id=%s AND customer_id=%s", (del_trans_id, manage_id))
+                            conn.commit()
+                            cur.close()
+                            recalculate_balances(conn, manage_id)
+                            st.success(f"Transaction #{del_trans_id} deleted successfully")
+                            st.rerun()
                     except mysql.connector.Error as e:
                         conn.rollback()
                         st.error(f"Error: {e}")
