@@ -298,7 +298,6 @@ def get_google_sheet():
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
         if "gcp_json_key" in st.secrets:
-            # Handles raw JSON string directly
             creds_info = json.loads(st.secrets["gcp_json_key"])
             creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         elif "gcp_service_account" in st.secrets:
@@ -318,9 +317,10 @@ def get_google_sheet():
 
         client = gspread.authorize(creds)
         sheet_id = st.secrets.get("google_sheet_id", "1C_SZGXkWEpmmH_UojnOStyxXRUAWOVhoo7-U8mI9lnQ")
-        return client.open_by_key(sheet_id)
+        sheet = client.open_by_key(sheet_id)
+        return sheet, None
     except Exception as e:
-        return None
+        return None, str(e)
 
 
 def sync_to_google_sheet(customer_name, rows_to_append):
@@ -328,11 +328,14 @@ def sync_to_google_sheet(customer_name, rows_to_append):
     Appends rows to the dedicated customer worksheet in Google Sheets.
     Each customer gets their own separate worksheet tab (named after customer).
     rows_to_append: list of [Date, Txn_ID, Vehicle, Product, Litres, Debit, Credit, Running_Balance]
+    Returns (True, msg) or (False, error_msg)
     """
     try:
-        sheet = get_google_sheet()
-        if not sheet or not rows_to_append:
-            return
+        sheet, err = get_google_sheet()
+        if not sheet:
+            return False, f"Could not open Google Sheet: {err}"
+        if not rows_to_append:
+            return False, "No rows to sync."
 
         # Sanitize customer name for tab title (max 30 chars, no illegal characters)
         tab_name = "".join(c for c in customer_name if c not in r'/\?*[]:').strip()[:30]
@@ -353,9 +356,9 @@ def sync_to_google_sheet(customer_name, rows_to_append):
 
         # Batch append rows
         worksheet.append_rows(rows_to_append, value_input_option="USER_ENTERED")
+        return True, "Synced successfully"
     except Exception as e:
-        # Non-blocking: logs error without interrupting user workflow
-        pass
+        return False, str(e)
 
 
 # =========================
@@ -559,7 +562,8 @@ with tab2:
                         # Auto-append to dedicated customer worksheet in Google Sheets
                         updated_txns = get_transactions(conn, selected_customer)
                         curr_balance = updated_txns["balance"].iloc[-1] if not updated_txns.empty else 0.0
-                        sync_to_google_sheet(selected_name, [[
+
+                        sync_ok, sync_msg = sync_to_google_sheet(selected_name, [[
                             str(trans_date),
                             trans_id.strip(),
                             vehicle.strip(),
@@ -570,7 +574,12 @@ with tab2:
                             curr_balance
                         ]])
 
-                        st.success("Transaction added & synced to Google Sheets!")
+                        if sync_ok:
+                            st.success("✅ Transaction added & synced to Google Sheets!")
+                        else:
+                            st.success("✅ Transaction added to MySQL!")
+                            st.warning(f"Google Sheets notice: {sync_msg}")
+
                         st.rerun()
                     except mysql.connector.Error as e:
                         conn.rollback()
@@ -639,7 +648,7 @@ with tab2:
 
             csv_data = export_df.to_csv(index=False).encode('utf-8')
 
-            btn_c1, btn_c2, _ = st.columns([1.5, 1.5, 2])
+            btn_c1, btn_c2, btn_c3 = st.columns([1.5, 1.5, 2])
             clean_filename = f"{selected_name.replace(' ', '_')}_{start_dt}_{end_dt}"
 
             btn_c1.download_button(
@@ -658,6 +667,25 @@ with tab2:
                 mime="text/csv",
                 use_container_width=True
             )
+
+            if btn_c3.button(f"☁️ Sync All to Google Sheet", use_container_width=True, key=f"manual_gsync_{selected_customer}"):
+                all_rows = []
+                for _, r in filtered_df.iterrows():
+                    all_rows.append([
+                        str(r["trans_date"]),
+                        str(r["trans_id"]),
+                        str(r["vehicle"]),
+                        str(r["product"]),
+                        float(r["litres"]),
+                        float(r["debit"]),
+                        float(r["credit"]),
+                        float(r["balance"])
+                    ])
+                ok, msg = sync_to_google_sheet(selected_name, all_rows)
+                if ok:
+                    st.success(f"✅ Synced {len(all_rows)} rows to Google Sheet tab '{selected_name}'!")
+                else:
+                    st.error(f"❌ Google Sheets error: {msg}")
         else:
             st.warning("No transactions match the selected date range.")
 
