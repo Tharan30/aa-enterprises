@@ -469,88 +469,99 @@ with tab2:
                         conn.rollback()
                         st.error(f"Error: {e}")
 
+        # Datewise Export Section (Always visible, prominent card)
+        st.markdown("""
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:14px; padding:20px; margin:20px 0 16px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                <span style="font-size:20px;">📤</span>
+                <span style="font-size:17px; font-weight:700; color:#1e293b;">Export Statement (Date-Wise)</span>
+            </div>
+            <p style="color:#64748b; font-size:13px; margin:0 0 16px 0;">Filter transactions by date and download in Excel or CSV.</p>
+        """, unsafe_allow_html=True)
+
+        exp_col1, exp_col2, exp_col3 = st.columns([1.5, 1.5, 1])
+
+        # Get min and max dates
+        if not transactions_df.empty:
+            min_date = pd.to_datetime(transactions_df["trans_date"]).min().date()
+            max_date = pd.to_datetime(transactions_df["trans_date"]).max().date()
+        else:
+            min_date = date.today()
+            max_date = date.today()
+
+        start_dt = exp_col1.date_input("From Date", min_date, key=f"exp_start_{selected_customer}")
+        end_dt = exp_col2.date_input("To Date", max_date, key=f"exp_end_{selected_customer}")
+
+        preset = exp_col3.selectbox("Quick Range", ["Custom", "This Month", "All Time"], key=f"exp_preset_{selected_customer}")
+        if preset == "This Month":
+            today = date.today()
+            start_dt = today.replace(day=1)
+            end_dt = today
+        elif preset == "All Time":
+            start_dt = min_date
+            end_dt = max_date
+
+        # Filter dataframe
+        if not transactions_df.empty:
+            filtered_df = transactions_df.copy()
+            filtered_df["_dt"] = pd.to_datetime(filtered_df["trans_date"]).dt.date
+            filtered_df = filtered_df[(filtered_df["_dt"] >= start_dt) & (filtered_df["_dt"] <= end_dt)]
+            filtered_df = filtered_df.drop(columns=["_dt"])
+        else:
+            filtered_df = pd.DataFrame()
+
+        st.markdown(f"<p style='color:#475569; font-size:13px; margin:8px 0 14px;'>Found <b>{len(filtered_df)}</b> records between <b>{start_dt.strftime('%d-%b-%Y')}</b> and <b>{end_dt.strftime('%d-%b-%Y')}</b></p>", unsafe_allow_html=True)
+
+        if not filtered_df.empty:
+            export_df = filtered_df.rename(columns={
+                "id": "Sl No",
+                "trans_date": "Date",
+                "trans_id": "Txn ID",
+                "vehicle": "Vehicle",
+                "product": "Product",
+                "litres": "Litres",
+                "debit": "Debit (₹)",
+                "credit": "Credit (₹)",
+                "balance": "Balance (₹)"
+            })
+
+            excel_buffer = BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                export_df.to_excel(writer, index=False, sheet_name=selected_name[:30])
+            excel_data = excel_buffer.getvalue()
+
+            csv_data = export_df.to_csv(index=False).encode('utf-8')
+
+            btn_c1, btn_c2, _ = st.columns([1.5, 1.5, 2])
+            clean_filename = f"{selected_name.replace(' ', '_')}_{start_dt}_{end_dt}"
+
+            btn_c1.download_button(
+                label="📥 Download Excel (.xlsx)",
+                data=excel_data,
+                file_name=f"{clean_filename}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                type="primary"
+            )
+
+            btn_c2.download_button(
+                label="📄 Download CSV",
+                data=csv_data,
+                file_name=f"{clean_filename}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        else:
+            st.warning("No transactions match the selected date range.")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
         # Transactions table
+        st.markdown("#### 📋 Transaction History")
         if transactions_df.empty:
             st.info("No transactions for this customer yet.")
         else:
             st.dataframe(transactions_df, use_container_width=True, hide_index=True, height=400)
-
-            # Datewise Export Section
-            st.markdown("---")
-            with st.expander("📤 Export Statement (Date-Wise Filter)", expanded=True):
-                st.markdown("<p style='color:#64748b; font-size:14px; margin-bottom:12px;'>Choose a date range to filter and download the transaction statement in Excel or CSV format.</p>", unsafe_allow_html=True)
-
-                exp_col1, exp_col2, exp_col3 = st.columns([1.5, 1.5, 1])
-
-                # Get min and max dates from data if available
-                min_date = pd.to_datetime(transactions_df["trans_date"]).min().date() if not transactions_df.empty else date.today()
-                max_date = pd.to_datetime(transactions_df["trans_date"]).max().date() if not transactions_df.empty else date.today()
-
-                start_dt = exp_col1.date_input("From Date", min_date, key=f"exp_start_{selected_customer}")
-                end_dt = exp_col2.date_input("To Date", max_date, key=f"exp_end_{selected_customer}")
-
-                # Quick presets in col3
-                preset = exp_col3.selectbox("Quick Range", ["Custom", "This Month", "All Time"], key=f"exp_preset_{selected_customer}")
-                if preset == "This Month":
-                    today = date.today()
-                    start_dt = today.replace(day=1)
-                    end_dt = today
-                elif preset == "All Time":
-                    start_dt = min_date
-                    end_dt = max_date
-
-                # Filter dataframe
-                filtered_df = transactions_df.copy()
-                filtered_df["_dt"] = pd.to_datetime(filtered_df["trans_date"]).dt.date
-                filtered_df = filtered_df[(filtered_df["_dt"] >= start_dt) & (filtered_df["_dt"] <= end_dt)]
-                filtered_df = filtered_df.drop(columns=["_dt"])
-
-                st.caption(f"Showing **{len(filtered_df)}** transactions between **{start_dt.strftime('%d-%b-%Y')}** and **{end_dt.strftime('%d-%b-%Y')}**")
-
-                if not filtered_df.empty:
-                    # Clean column names for export
-                    export_df = filtered_df.rename(columns={
-                        "id": "Sl No",
-                        "trans_date": "Date",
-                        "trans_id": "Txn ID",
-                        "vehicle": "Vehicle",
-                        "product": "Product",
-                        "litres": "Litres",
-                        "debit": "Debit (₹)",
-                        "credit": "Credit (₹)",
-                        "balance": "Balance (₹)"
-                    })
-
-                    # Excel buffer
-                    excel_buffer = BytesIO()
-                    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-                        export_df.to_excel(writer, index=False, sheet_name=selected_name[:30])
-                    excel_data = excel_buffer.getvalue()
-
-                    # CSV buffer
-                    csv_data = export_df.to_csv(index=False).encode('utf-8')
-
-                    btn_c1, btn_c2, _ = st.columns([1.5, 1.5, 3])
-                    clean_filename = f"{selected_name.replace(' ', '_')}_{start_dt}_{end_dt}"
-
-                    btn_c1.download_button(
-                        label="📥 Download Excel (.xlsx)",
-                        data=excel_data,
-                        file_name=f"{clean_filename}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        type="primary"
-                    )
-
-                    btn_c2.download_button(
-                        label="📄 Download CSV",
-                        data=csv_data,
-                        file_name=f"{clean_filename}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                else:
-                    st.warning("No transactions match the selected date range.")
 
 # =========================
 # TAB 3 — IMPORT EXCEL
