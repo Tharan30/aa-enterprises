@@ -295,9 +295,15 @@ except mysql.connector.Error:
 def get_google_sheet():
     """Connect to Google Sheet using secrets or local google_creds.json."""
     try:
+        import base64
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-        if "gcp_json_key" in st.secrets:
+        if "gcp_base64_key" in st.secrets:
+            # Bulletproof single-line Base64 string: no escaping, no TOML parsing conflicts
+            decoded_json = base64.b64decode(st.secrets["gcp_base64_key"]).decode("utf-8")
+            creds_info = json.loads(decoded_json)
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        elif "gcp_json_key" in st.secrets:
             creds_info = json.loads(st.secrets["gcp_json_key"])
             creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         elif "gcp_service_account" in st.secrets:
