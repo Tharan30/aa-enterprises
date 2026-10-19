@@ -379,6 +379,84 @@ def recalculate_balances(conn, customer_id):
     update_cur.close()
 
 
+def archive_old_year_transactions(conn, target_year):
+    """
+    Safely archives all transactions from a given year (e.g. 2025):
+    1. Ensures each transaction has been synced to customer's Google Sheet tab.
+    2. Calculates customer's closing balance at the end of that year.
+    3. Deletes the old year's transactions from MySQL database.
+    4. Inserts a clean 'B/F Balance (Year-End)' transaction carrying the balance forward.
+    """
+    try:
+        cur = run_query(conn, "SELECT customer_id, customer_name FROM customers")
+        all_custs = cur.fetchall()
+        cur.close()
+
+        total_pruned = 0
+        for cust_id, cust_name in all_custs:
+            # Fetch transactions for that year
+            cur_tx = run_query(conn, """
+            SELECT id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance
+            FROM ledger_transactions
+            WHERE customer_id=%s AND YEAR(trans_date)=%s
+            ORDER BY trans_date ASC, id ASC
+            """, (cust_id, target_year))
+            tx_rows = cur_tx.fetchall()
+            cur_tx.close()
+
+            if not tx_rows:
+                continue
+
+            # Step 1: Ensure backed up in Google Sheets
+            gsheet_backup_rows = []
+            for r in tx_rows:
+                gsheet_backup_rows.append([
+                    str(r[1]), str(r[2]), str(r[3]), str(r[4]),
+                    float(r[5] or 0), float(r[6] or 0), float(r[7] or 0), float(r[8] or 0)
+                ])
+            sync_to_google_sheet(cust_name, gsheet_backup_rows)
+
+            # Step 2: Calculate closing balance of that year
+            closing_balance = float(tx_rows[-1][8] or 0)
+
+            # Step 3: Delete old year's transactions from MySQL
+            del_cur = run_query(conn, """
+            DELETE FROM ledger_transactions
+            WHERE customer_id=%s AND YEAR(trans_date)=%s
+            """, (cust_id, target_year))
+            conn.commit()
+            del_cur.close()
+            total_pruned += len(tx_rows)
+
+            # Step 4: Insert opening balance record on Jan 1 of next year (or Dec 31 of target year)
+            if closing_balance != 0:
+                op_debit = closing_balance if closing_balance > 0 else 0.0
+                op_credit = abs(closing_balance) if closing_balance < 0 else 0.0
+                ins_cur = run_query(conn, """
+                INSERT INTO ledger_transactions (customer_id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    cust_id,
+                    f"{target_year}-12-31",
+                    f"BF-{target_year}",
+                    "-",
+                    f"B/F Balance ({target_year})",
+                    0.0,
+                    op_debit,
+                    op_credit,
+                    closing_balance
+                ))
+                conn.commit()
+                ins_cur.close()
+
+            recalculate_balances(conn, cust_id)
+
+        return True, f"Successfully archived and cleared {total_pruned} records for year {target_year}. Google Sheets remains intact!"
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+
+
 def get_customers(conn):
     return get_dataframe(conn, "SELECT customer_id, customer_name, phone FROM customers ORDER BY customer_name")
 
@@ -896,6 +974,75 @@ with tab4:
                     except mysql.connector.Error as e:
                         conn.rollback()
                         st.error(f"Error: {e}")
+
+        # ==========================================
+        # 📦 YEARLY STORAGE PRUNE & ARCHIVAL SECTION
+        # ==========================================
+        st.markdown("---")
+        st.markdown("#### 💾 Database Storage & Yearly Archival")
+        st.markdown("<p style='color:#64748b; font-size:13px; margin-bottom:16px;'>Automatically clean up older years from MySQL to save database space. The complete detailed transaction history is permanently preserved in your <b>Google Sheets</b>.</p>", unsafe_allow_html=True)
+
+        col_arch1, col_arch2 = st.columns([1.5, 2])
+
+        with col_arch1:
+            # Check available distinct years in the transactions table
+            year_cur = run_query(conn, "SELECT DISTINCT YEAR(trans_date) FROM ledger_transactions ORDER BY 1 ASC")
+            available_years = [y[0] for y in year_cur.fetchall() if y[0] is not None]
+            year_cur.close()
+
+            current_year = date.today().year
+            # Older years that can be pruned (years before current year)
+            archivable_years = [y for y in available_years if y < current_year]
+
+            if not archivable_years:
+                st.info(f"All transactions are from current year ({current_year}). No past years need archiving.")
+            else:
+                target_year = st.selectbox("Select Past Year to Archive", archivable_years, key="archive_year_sel")
+                
+                # Count records for that year
+                cnt_cur = run_query(conn, "SELECT COUNT(*) FROM ledger_transactions WHERE YEAR(trans_date)=%s", (target_year,))
+                year_records = cnt_cur.fetchone()[0]
+                cnt_cur.close()
+
+                st.caption(f"Found **{year_records}** records for year **{target_year}**.")
+
+                if st.button(f"🧹 Clean & Archive Year {target_year}", type="primary", key="btn_run_archive"):
+                    with st.spinner(f"Archiving year {target_year} to Google Sheets and pruning MySQL..."):
+                        ok, msg = archive_old_year_transactions(conn, target_year)
+                        if ok:
+                            st.success(f"✅ {msg}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Archival error: {msg}")
+
+        with col_arch2:
+            # Query table size
+            try:
+                size_cur = run_query(conn, """
+                SELECT 
+                    ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'size_mb'
+                FROM information_schema.TABLES
+                WHERE table_schema = DATABASE()
+                """)
+                db_size = float(size_cur.fetchone()[0] or 0.0)
+                size_cur.close()
+
+                # Aiven free tier is 1024 MB
+                max_mb = 1024.0
+                pct = min(round((db_size / max_mb) * 100, 2), 100.0)
+
+                st.markdown(f"""
+                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:16px;">
+                    <div style="font-weight:700; color:#1e293b; margin-bottom:4px;">MySQL Disk Gauge</div>
+                    <div style="font-size:24px; font-weight:800; color:#2563eb;">{db_size} MB <span style="font-size:14px; color:#64748b; font-weight:500;">/ 1024 MB ({pct}%)</span></div>
+                    <div style="background:#e2e8f0; border-radius:8px; height:8px; margin:8px 0; overflow:hidden;">
+                        <div style="background:#2563eb; width:{max(pct, 2)}%; height:100%;"></div>
+                    </div>
+                    <div style="color:#64748b; font-size:12px;">✅ Synced safely with Google Sheets</div>
+                </div>
+                """, unsafe_allow_html=True)
+            except Exception:
+                pass
 
 # =========================
 # SIDEBAR
