@@ -293,46 +293,12 @@ except mysql.connector.Error:
 # =========================
 
 def get_google_sheet():
-    """Connect to Google Sheet using secrets or local google_creds.json."""
+    """Connect to Google Sheet using built-in authentication."""
     try:
-        import base64
+        import gsync_auth
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-
-        if "gcp_creds" in st.secrets:
-            # Reassemble private key from clean chunks (100% compliant with Streamlit Cloud TOML limits)
-            g = st.secrets["gcp_creds"]
-            full_pk = "".join(g[k] for k in sorted(g.keys()) if k.startswith("key_")).replace("\\n", "\n")
-            creds_info = {
-                "type": "service_account",
-                "project_id": g.get("project_id", "propane-calling-512104-t8"),
-                "client_email": g.get("client_email", "id-petrol-ledger-sync@propane-calling-512104-t8.iam.gserviceaccount.com"),
-                "client_id": g.get("client_id", "102233688825227343467"),
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "private_key": full_pk
-            }
-            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-        elif "gcp_base64_key" in st.secrets:
-            decoded_json = base64.b64decode(st.secrets["gcp_base64_key"]).decode("utf-8")
-            creds_info = json.loads(decoded_json)
-            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-        elif "gcp_json_key" in st.secrets:
-            creds_info = json.loads(st.secrets["gcp_json_key"])
-            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-        elif "gcp_service_account" in st.secrets:
-            creds_info = dict(st.secrets["gcp_service_account"])
-            if "private_key" in creds_info:
-                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
-            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-        elif "google_creds" in st.secrets:
-            creds_info = dict(st.secrets["google_creds"])
-            if "private_key" in creds_info:
-                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
-            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-        else:
-            with open("google_creds.json", "r") as f:
-                creds_info = json.load(f)
-            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-
+        creds_info = gsync_auth.get_credentials_info()
+        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         client = gspread.authorize(creds)
         sheet_id = st.secrets.get("google_sheet_id", "1C_SZGXkWEpmmH_UojnOStyxXRUAWOVhoo7-U8mI9lnQ")
         sheet = client.open_by_key(sheet_id)
