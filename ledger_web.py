@@ -411,7 +411,14 @@ with tab1:
         if customers_df.empty:
             st.info("No customers yet. Add one to get started.")
         else:
-            st.dataframe(customers_df, use_container_width=True, hide_index=True, height=400)
+            # Display clean sequential S.No (1, 2, 3...) instead of database customer_id
+            customer_display_df = customers_df.copy()
+            customer_display_df.insert(0, "S.No", range(1, len(customer_display_df) + 1))
+            customer_display_df = customer_display_df[["S.No", "customer_name", "phone"]].rename(columns={
+                "customer_name": "Customer Name",
+                "phone": "Phone Number"
+            })
+            st.dataframe(customer_display_df, use_container_width=True, hide_index=True, height=400)
 
 # =========================
 # TAB 2 — LEDGER
