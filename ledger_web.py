@@ -298,8 +298,20 @@ def get_google_sheet():
         import base64
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-        if "gcp_base64_key" in st.secrets:
-            # Bulletproof single-line Base64 string: no escaping, no TOML parsing conflicts
+        if "gcp_creds" in st.secrets:
+            # Reassemble private key from clean chunks (100% compliant with Streamlit Cloud TOML limits)
+            g = st.secrets["gcp_creds"]
+            full_pk = "".join(g[k] for k in sorted(g.keys()) if k.startswith("key_")).replace("\\n", "\n")
+            creds_info = {
+                "type": "service_account",
+                "project_id": g.get("project_id", "propane-calling-512104-t8"),
+                "client_email": g.get("client_email", "id-petrol-ledger-sync@propane-calling-512104-t8.iam.gserviceaccount.com"),
+                "client_id": g.get("client_id", "102233688825227343467"),
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "private_key": full_pk
+            }
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        elif "gcp_base64_key" in st.secrets:
             decoded_json = base64.b64decode(st.secrets["gcp_base64_key"]).decode("utf-8")
             creds_info = json.loads(decoded_json)
             creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
