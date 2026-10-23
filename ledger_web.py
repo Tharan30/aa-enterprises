@@ -6,6 +6,38 @@ from io import BytesIO
 import json
 import gspread
 from google.oauth2.service_account import Credentials
+import hmac
+import time
+import logging
+import re
+
+# Secure server-side logging (never exposed to client browser)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("ledger_app")
+
+# =========================
+# SECURITY PROTOCOLS & SANITIZATION
+# =========================
+
+def sanitize_formula_injection(val):
+    """
+    Neutralizes CSV / Excel Formula Injection (CWE-1236).
+    Prepends a single quote if string starts with '=', '+', '-', '@', '\t', '\r'.
+    """
+    if val is None:
+        return ""
+    s = str(val).strip()
+    if s and s[0] in ('=', '+', '-', '@', '\t', '\r'):
+        return "'" + s
+    return s
+
+
+def sanitize_text(val, max_len=100):
+    """Sanitizes text inputs, removes non-printable control characters, and truncates to max_len."""
+    if val is None:
+        return ""
+    cleaned = "".join(ch for ch in str(val) if ch.isprintable() or ch in " \t")
+    return sanitize_formula_injection(cleaned.strip())[:max_len]
 
 # =========================
 # PAGE CONFIG
@@ -198,13 +230,30 @@ div[data-testid="stExpander"] details summary span {
 # AUTHENTICATION
 # =========================
 
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_DURATION_SECONDS = 30
+
 def check_password():
-    """Simple password gate using session state."""
+    """
+    Secure authentication gate with:
+    - Constant-time password comparison (CWE-208 mitigation)
+    - Anti-brute-force rate limiting and temporary lockout (CWE-307 mitigation)
+    """
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
+    if "login_failed_attempts" not in st.session_state:
+        st.session_state.login_failed_attempts = 0
+    if "login_lockout_until" not in st.session_state:
+        st.session_state.login_lockout_until = 0.0
 
     if st.session_state.authenticated:
         return True
+
+    now = time.time()
+    if now < st.session_state.login_lockout_until:
+        remaining = int(st.session_state.login_lockout_until - now)
+        st.error(f"🔒 Too many failed login attempts. Access temporarily locked. Please wait {remaining} seconds.")
+        st.stop()
 
     st.markdown("""
     <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:60vh;">
@@ -221,11 +270,23 @@ def check_password():
             submitted = st.form_submit_button("Login", use_container_width=True)
 
             if submitted:
-                if password == st.secrets["app_password"]:
+                expected_pwd = str(st.secrets.get("app_password", "")).strip()
+                # Constant-time comparison to prevent timing side-channel attacks
+                if expected_pwd and hmac.compare_digest(password.strip(), expected_pwd):
                     st.session_state.authenticated = True
+                    st.session_state.login_failed_attempts = 0
+                    st.session_state.login_lockout_until = 0.0
+                    logger.info("User authenticated successfully.")
                     st.rerun()
                 else:
-                    st.error("Incorrect password")
+                    st.session_state.login_failed_attempts += 1
+                    attempts = st.session_state.login_failed_attempts
+                    logger.warning(f"Failed login attempt ({attempts}/{MAX_LOGIN_ATTEMPTS})")
+                    if attempts >= MAX_LOGIN_ATTEMPTS:
+                        st.session_state.login_lockout_until = time.time() + LOCKOUT_DURATION_SECONDS
+                        st.error(f"🔒 Maximum attempts exceeded. Account locked out for {LOCKOUT_DURATION_SECONDS} seconds.")
+                    else:
+                        st.error(f"Incorrect password ({attempts}/{MAX_LOGIN_ATTEMPTS} attempts before temporary lockout)")
 
     return False
 
@@ -716,19 +777,22 @@ with tab1:
             add_btn = st.form_submit_button("Add Customer", use_container_width=True)
 
             if add_btn:
-                if not name.strip():
-                    st.error("Enter a customer name")
+                clean_name = sanitize_text(name, max_len=100)
+                clean_phone = re.sub(r"[^\d+\-\s()]", "", phone.strip())[:20]
+                if not clean_name:
+                    st.error("Please enter a valid customer name.")
                 else:
                     try:
                         cur = run_query(conn, "INSERT INTO customers(sales_id, customer_name, phone) VALUES(%s,%s,%s)",
-                                        (1, name.strip(), phone.strip()))
+                                        (1, clean_name, clean_phone))
                         conn.commit()
                         cur.close()
-                        st.success(f"Added **{name.strip()}**")
+                        st.success(f"Added **{clean_name}**")
                         st.rerun()
                     except mysql.connector.Error as e:
                         conn.rollback()
-                        st.error(f"Error: {e}")
+                        logger.error(f"Database error adding customer: {e}")
+                        st.error("Could not add customer due to a database error. Please try again.")
 
     with col_list:
         st.markdown("#### 📋 Customer List")
@@ -785,41 +849,51 @@ with tab2:
                 add_trans = st.form_submit_button("Add Transaction", use_container_width=True)
 
                 if add_trans:
-                    try:
-                        cur = run_query(conn, """
-                        INSERT INTO ledger_transactions(customer_id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance)
-                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        """, (selected_customer, trans_date, trans_id.strip(), vehicle.strip(),
-                              product.strip(), litres, debit, credit, 0))
-                        conn.commit()
-                        cur.close()
-                        recalculate_balances(conn, selected_customer)
+                    clean_tx_id = sanitize_text(trans_id, max_len=50)
+                    clean_vehicle = sanitize_text(vehicle, max_len=50)
+                    clean_product = sanitize_text(product, max_len=100)
 
-                        # Auto-append to dedicated customer worksheet in Google Sheets
-                        updated_txns = get_transactions(conn, selected_customer)
-                        curr_balance = updated_txns["balance"].iloc[-1] if not updated_txns.empty else 0.0
+                    if litres < 0 or debit < 0 or credit < 0:
+                        st.error("Quantities and amounts cannot be negative.")
+                    elif debit == 0 and credit == 0:
+                        st.warning("Please enter either a Debit or Credit amount.")
+                    else:
+                        try:
+                            cur = run_query(conn, """
+                            INSERT INTO ledger_transactions(customer_id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance)
+                            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            """, (selected_customer, trans_date, clean_tx_id, clean_vehicle,
+                                  clean_product, float(litres), float(debit), float(credit), 0))
+                            conn.commit()
+                            cur.close()
+                            recalculate_balances(conn, selected_customer)
 
-                        sync_ok, sync_msg = sync_to_google_sheet(selected_name, [[
-                            str(trans_date),
-                            trans_id.strip(),
-                            vehicle.strip(),
-                            product.strip(),
-                            litres,
-                            debit,
-                            credit,
-                            curr_balance
-                        ]])
+                            # Auto-append to dedicated customer worksheet in Google Sheets
+                            updated_txns = get_transactions(conn, selected_customer)
+                            curr_balance = updated_txns["balance"].iloc[-1] if not updated_txns.empty else 0.0
 
-                        if sync_ok:
-                            st.success("✅ Transaction added & synced to Google Sheets!")
-                        else:
-                            st.success("✅ Transaction added to MySQL!")
-                            st.warning(f"Google Sheets notice: {sync_msg}")
+                            sync_ok, sync_msg = sync_to_google_sheet(selected_name, [[
+                                str(trans_date),
+                                clean_tx_id,
+                                clean_vehicle,
+                                clean_product,
+                                float(litres),
+                                float(debit),
+                                float(credit),
+                                float(curr_balance)
+                            ]])
 
-                        st.rerun()
-                    except mysql.connector.Error as e:
-                        conn.rollback()
-                        st.error(f"Error: {e}")
+                            if sync_ok:
+                                st.success("✅ Transaction added & synced to Google Sheets!")
+                            else:
+                                st.success("✅ Transaction added to MySQL!")
+                                st.warning(f"Google Sheets notice: {sync_msg}")
+
+                            st.rerun()
+                        except mysql.connector.Error as e:
+                            conn.rollback()
+                            logger.error(f"Database error adding transaction: {e}")
+                            st.error("Could not add transaction due to a database error. Please try again.")
 
         # Datewise Export Section (Always visible, prominent card)
         st.markdown("""
@@ -876,6 +950,11 @@ with tab2:
                 "credit": "Credit (₹)",
                 "balance": "Balance (₹)"
             })
+
+            # Shield exported statements from CSV / Excel Formula Injection (CWE-1236)
+            for col in ["Txn ID", "Vehicle", "Product"]:
+                if col in export_df.columns:
+                    export_df[col] = export_df[col].astype(str).apply(sanitize_formula_injection)
 
             excel_buffer = BytesIO()
             with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
@@ -997,15 +1076,20 @@ with tab3:
                             else:
                                 df[needed] = ""
 
-                    # Clean data
-                    df["litres"] = pd.to_numeric(df["litres"], errors="coerce").fillna(0.0)
-                    df["debit"] = pd.to_numeric(df["debit"], errors="coerce").fillna(0.0)
-                    df["credit"] = pd.to_numeric(df["credit"], errors="coerce").fillna(0.0)
+                    # Guard against excessive batch size (DoS prevention)
+                    if len(df) > 5000:
+                        st.error("Uploaded file exceeds the maximum batch limit of 5,000 rows. Please split the file into smaller batches.")
+                        st.stop()
+
+                    # Clean data, enforce non-negative values, and sanitize against Formula Injection
+                    df["litres"] = pd.to_numeric(df["litres"], errors="coerce").fillna(0.0).clip(lower=0.0)
+                    df["debit"] = pd.to_numeric(df["debit"], errors="coerce").fillna(0.0).clip(lower=0.0)
+                    df["credit"] = pd.to_numeric(df["credit"], errors="coerce").fillna(0.0).clip(lower=0.0)
                     df["trans_date"] = pd.to_datetime(df["trans_date"], errors="coerce", dayfirst=True).dt.date
                     df["trans_date"] = df["trans_date"].fillna(date.today())
-                    df["trans_id"] = df["trans_id"].astype(str).replace("nan", "")
-                    df["vehicle"] = df["vehicle"].astype(str).replace("nan", "")
-                    df["product"] = df["product"].astype(str).replace("nan", "")
+                    df["trans_id"] = df["trans_id"].astype(str).replace("nan", "").apply(sanitize_formula_injection).str.slice(0, 50)
+                    df["vehicle"] = df["vehicle"].astype(str).replace("nan", "").apply(sanitize_formula_injection).str.slice(0, 50)
+                    df["product"] = df["product"].astype(str).replace("nan", "").apply(sanitize_formula_injection).str.slice(0, 100)
 
                     # Preview
                     preview_df = df[["trans_date", "trans_id", "vehicle", "product", "litres", "debit", "credit"]]
@@ -1211,29 +1295,62 @@ with tab4:
                 st.caption(f"Found **{year_records}** records for year **{target_year}** in MySQL.")
 
                 st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
+                if "cleanup_failed_attempts" not in st.session_state:
+                    st.session_state.cleanup_failed_attempts = 0
+                if "cleanup_lockout_until" not in st.session_state:
+                    st.session_state.cleanup_lockout_until = 0.0
+
+                now = time.time()
+                is_cleanup_locked = now < st.session_state.cleanup_lockout_until
+
+                if is_cleanup_locked:
+                    rem_sec = int(st.session_state.cleanup_lockout_until - now)
+                    st.error(f"🔒 Yearly clearance locked due to multiple failed attempts. Please wait {rem_sec} seconds.")
+
                 cleanup_master_pwd = st.text_input(
                     "🔑 Master Password for Yearly Clearance",
                     type="password",
                     placeholder="Enter master password to authorize",
                     key="yearly_cleanup_master_pwd",
+                    disabled=is_cleanup_locked,
                     help="Master authorization password required to clear MySQL data."
                 )
 
-                if st.button(f"🧹 Clean Year {target_year} Transactions (MySQL Only)", type="primary", key="btn_run_archive"):
+                confirm_cleanup_box = st.checkbox(
+                    f"⚠️ I confirm authorization to purge MySQL records for year {target_year} (Google Sheets audit trail remains 100% preserved).",
+                    key=f"confirm_clean_{target_year}"
+                )
+
+                if st.button(f"🧹 Clean Year {target_year} Transactions (MySQL Only)", type="primary", key="btn_run_archive", disabled=is_cleanup_locked):
+                    expected_master = str(st.secrets.get("yearly_cleanup_password", "AAYEARLYCLEANUP")).strip()
+
                     if not cleanup_master_pwd:
                         st.error("🔒 Master Password is required to perform yearly database clearance.")
-                    elif cleanup_master_pwd.strip() != "AAYEARLYCLEANUP":
-                        st.error("❌ Invalid Master Password! Access denied. Database was NOT modified.")
+                    # Constant-time comparison to prevent timing attacks
+                    elif not hmac.compare_digest(cleanup_master_pwd.strip(), expected_master):
+                        st.session_state.cleanup_failed_attempts += 1
+                        attempts = st.session_state.cleanup_failed_attempts
+                        logger.warning(f"Failed master clearance password attempt ({attempts}/3)")
+                        if attempts >= 3:
+                            st.session_state.cleanup_lockout_until = time.time() + 60.0
+                            st.error("🔒 Too many incorrect master password attempts. Clearance locked for 60 seconds.")
+                        else:
+                            st.error(f"❌ Invalid Master Password! Access denied ({attempts}/3 attempts before lockout).")
+                    elif not confirm_cleanup_box:
+                        st.warning("⚠️ Please check the confirmation box above to verify authorization.")
                     elif year_records == 0:
                         st.warning(f"No records found to clean for year {target_year}.")
                     else:
+                        st.session_state.cleanup_failed_attempts = 0
                         with st.spinner(f"Safely clearing year {target_year} from MySQL (Google Drive 100% preserved)..."):
                             ok, msg = archive_old_year_transactions(conn, target_year)
                             if ok:
+                                logger.info(f"Annual cleanup executed for year {target_year}.")
                                 st.success(f"✅ {msg}")
                                 st.rerun()
                             else:
-                                st.error(f"❌ Clearance error: {msg}")
+                                logger.error(f"Archival error: {msg}")
+                                st.error("❌ An error occurred during database clearance.")
 
         with col_arch2:
             # Query table size
@@ -1273,5 +1390,7 @@ with st.sidebar:
     st.caption("Sales Ledger System")
     st.markdown("---")
     if st.button("🚪 Logout", use_container_width=True):
+        st.session_state.clear()
         st.session_state.authenticated = False
+        logger.info("User logged out; session state cleared.")
         st.rerun()

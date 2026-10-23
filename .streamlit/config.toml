@@ -5,6 +5,9 @@ toolbarMode = "minimal"
 headless = true
 address = "0.0.0.0"
 port = 8501
+enableCORS = true
+enableXsrfProtection = true
+maxUploadSize = 10
 
 [browser]
 gatherUsageStats = false
