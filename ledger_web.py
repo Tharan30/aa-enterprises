@@ -94,7 +94,7 @@ div[data-testid="stExpander"] details summary span {
 }
 
 .block-container {
-    padding-top: 1.5rem;
+    padding-top: 4.5rem;
     padding-bottom: 2rem;
     max-width: 1200px;
 }
@@ -237,7 +237,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
     outline: 3px solid #2563eb !important; outline-offset: 3px; }
 .stButton>button, .stFormSubmitButton>button { min-height: 44px; }
 @media (max-width: 768px) {
-    .block-container { padding: 1rem; }
+    .block-container { padding: 4.5rem 1rem 1rem; }
     .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .app-header { padding: 18px; }
     .stTabs [data-baseweb="tab"] { padding: 10px 12px; }
