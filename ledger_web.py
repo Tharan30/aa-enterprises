@@ -10,6 +10,7 @@ import hmac
 import time
 import logging
 import re
+from html import escape
 
 # Secure server-side logging (never exposed to client browser)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -223,6 +224,29 @@ div[data-testid="stExpander"] details summary span {
     border-radius: 8px;
     border-color: #cbd5e1;
 }
+
+.app-header { text-align: left; padding: 24px 28px; border-radius: 20px;
+    background: #eaf2ff; border: 1px solid #cbdcf5; margin-bottom: 24px; }
+.app-title { font-size: clamp(24px, 4vw, 38px); letter-spacing: -1px; }
+.metric-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.m-card { min-width: 0; padding: 20px; border-top: 3px solid #2563eb; }
+.m-card .value { font-size: clamp(18px, 2.2vw, 28px); overflow-wrap: anywhere; }
+.stTabs [data-baseweb="tab-list"] { overflow-x: auto; }
+.stTabs [data-baseweb="tab"] { min-height: 48px; white-space: nowrap; }
+button:focus-visible, input:focus-visible, textarea:focus-visible {
+    outline: 3px solid #2563eb !important; outline-offset: 3px; }
+.stButton>button, .stFormSubmitButton>button { min-height: 44px; }
+@media (max-width: 768px) {
+    .block-container { padding: 1rem; }
+    .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .app-header { padding: 18px; }
+    .stTabs [data-baseweb="tab"] { padding: 10px 12px; }
+    [data-testid="stHorizontalBlock"] { flex-wrap: wrap; }
+    [data-testid="stColumn"] { min-width: 100% !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -256,17 +280,17 @@ def check_password():
         st.stop()
 
     st.markdown("""
-    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:60vh;">
+    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:22vh;">
         <div style="font-size:48px; margin-bottom:8px;">⛽</div>
         <div style="font-size:32px; font-weight:800; color:#1e293b;">AA ENTERPRISES</div>
         <div style="color:#64748b; font-size:15px; margin-bottom:28px;">Enter password to access the dashboard</div>
     </div>
     """, unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([1, 1, 1])
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.form("login_form"):
-            password = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Enter password...")
+            password = st.text_input("Password", type="password", placeholder="Enter your access password")
             submitted = st.form_submit_button("Login", use_container_width=True)
 
             if submitted:
@@ -313,7 +337,7 @@ def get_connection():
         )
         return conn
     except mysql.connector.Error as e:
-        st.error(f"Database connection failed: {e}")
+        st.error("Database unavailable. Please contact your administrator.")
         st.stop()
 
 
@@ -357,15 +381,15 @@ def get_google_sheet():
     """Connect to Google Sheet using built-in authentication."""
     try:
         import gsync_auth
-        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+        scopes = ['https://www.googleapis.com/auth/spreadsheets']
         creds_info = gsync_auth.get_credentials_info()
         creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         client = gspread.authorize(creds)
-        sheet_id = st.secrets.get("google_sheet_id", "1C_SZGXkWEpmmH_UojnOStyxXRUAWOVhoo7-U8mI9lnQ")
+        sheet_id = st.secrets["google_sheet_id"]
         sheet = client.open_by_key(sheet_id)
         return sheet, None
     except Exception as e:
-        return None, str(e)
+        return None, "Google Sheets connection unavailable. Check server configuration."
 
 
 def sync_to_google_sheet(customer_name, rows_to_append):
@@ -400,10 +424,10 @@ def sync_to_google_sheet(customer_name, rows_to_append):
             ])
 
         # Batch append rows
-        worksheet.append_rows(rows_to_append, value_input_option="USER_ENTERED")
+        worksheet.append_rows(rows_to_append, value_input_option="RAW")
         return True, "Synced successfully"
     except Exception as e:
-        return False, str(e)
+        return False, "Google Sheets operation failed. Please contact your administrator."
 
 
 def dates_match(d1, d2):
@@ -514,13 +538,13 @@ def delete_transaction_from_google_sheet(customer_name, trans_date, trans_id, de
                     running_bal += (deb_val - cred_val)
                     updated_balances.append([round(running_bal, 2)])
                 end_row = 1 + len(updated_balances)
-                worksheet.update(range_name=f"H2:H{end_row}", values=updated_balances, value_input_option="USER_ENTERED")
+                worksheet.update(range_name=f"H2:H{end_row}", values=updated_balances, value_input_option="RAW")
         except Exception:
             pass  # Row deletion was already successful
 
         return True, f"Transaction row #{target_row_idx} deleted from Google Sheet."
     except Exception as e:
-        return False, str(e)
+        return False, "Google Sheets operation failed. Please contact your administrator."
 
 
 # =========================
@@ -610,7 +634,7 @@ def ensure_transactions_in_google_sheet(customer_name, tx_rows):
                 ])
 
         if missing_rows:
-            worksheet.append_rows(missing_rows, value_input_option="USER_ENTERED")
+            worksheet.append_rows(missing_rows, value_input_option="RAW")
     except Exception:
         pass
 
@@ -689,7 +713,7 @@ def archive_old_year_transactions(conn, target_year):
         return True, f"Successfully cleared {total_pruned} records for year {target_year} from MySQL. Google Sheets historical data remains 100% intact!"
     except Exception as e:
         conn.rollback()
-        return False, str(e)
+        return False, "Google Sheets operation failed. Please contact your administrator."
 
 
 def get_customers(conn):
@@ -828,7 +852,7 @@ with tab2:
             st.markdown(f"""
             <div style="background:{bal_color}; color:white; padding:16px 24px; border-radius:12px;
                         font-size:20px; font-weight:700; margin-bottom:16px;">
-                📌 {selected_name} — Balance: ₹ {last_balance:,.2f}
+                📌 {escape(str(selected_name))} — Balance: ₹ {last_balance:,.2f}
             </div>
             """, unsafe_allow_html=True)
 
@@ -1036,7 +1060,7 @@ with tab3:
         </div>
         """, unsafe_allow_html=True)
 
-        uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type=["xlsx", "xls"], key="excel_upload")
+        uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type=["xlsx"], key="excel_upload")
 
         if uploaded_file is not None:
             try:
@@ -1322,9 +1346,9 @@ with tab4:
                 )
 
                 if st.button(f"🧹 Clean Year {target_year} Transactions (MySQL Only)", type="primary", key="btn_run_archive", disabled=is_cleanup_locked):
-                    expected_master = str(st.secrets.get("yearly_cleanup_password", "AAYEARLYCLEANUP")).strip()
+                    expected_master = str(st.secrets.get("yearly_cleanup_password", "")).strip()
 
-                    if not cleanup_master_pwd:
+                    if not expected_master or not cleanup_master_pwd:
                         st.error("🔒 Master Password is required to perform yearly database clearance.")
                     # Constant-time comparison to prevent timing attacks
                     elif not hmac.compare_digest(cleanup_master_pwd.strip(), expected_master):

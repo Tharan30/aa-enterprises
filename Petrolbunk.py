@@ -14,6 +14,7 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from tkcalendar import DateEntry
 import pandas as pd
+import os
 
 
 # =========================================================
@@ -21,10 +22,10 @@ import pandas as pd
 # =========================================================
 
 conn = mysql.connector.connect(
-    host="192.168.1.40",
-    user="ledger_user",
-    password="StrongPassword@123",
-    database="aa_enterprises"
+    host=os.environ["AA_DB_HOST"],
+    user=os.environ["AA_DB_USER"],
+    password=os.environ["AA_DB_PASSWORD"],
+    database=os.environ["AA_DB_NAME"]
 )
 
 # IMPORTANT: buffered=True prevents "Unread result found"
