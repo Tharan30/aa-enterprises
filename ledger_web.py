@@ -735,7 +735,7 @@ def get_transactions(conn, customer_id):
 st.markdown("""
 <div class="app-header">
     <div class="app-title">⛽ AA ENTERPRISES</div>
-    <div class="app-subtitle">Sales Ledger Dashboard</div>
+    <div class="app-subtitle">Customer accounts · Sales & payments</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -778,19 +778,29 @@ st.markdown(f"""
 # Build customer lookup
 customer_dict = {}
 if not customers_df.empty:
-    customer_dict = dict(zip(customers_df["customer_name"], customers_df["customer_id"]))
+    customer_dict = {f"{row.customer_name} · #{row.customer_id}": row.customer_id for row in customers_df.itertuples()}
 
 # =========================
 # TABS
 # =========================
 
-tab1, tab2, tab3, tab4 = st.tabs(["👥 Customers", "📒 Ledger", "📥 Import Excel", "⚙️ Manage"])
+section = st.radio("Workspace", ["Ledger", "Customers", "Import", "Manage"], horizontal=True, key="workspace")
+st.caption({
+    "Ledger": "Review balances, record sales and payments, and download statements.",
+    "Customers": "Keep customer contact details organized and easy to find.",
+    "Import": "Bring existing transactions into a customer's ledger.",
+    "Manage": "Review records carefully before permanent deletion.",
+}[section])
+if "flash" in st.session_state:
+    st.success(st.session_state.pop("flash"))
+if "sync_notice" in st.session_state:
+    st.warning(st.session_state.pop("sync_notice"))
 
 # =========================
 # TAB 1 — CUSTOMERS
 # =========================
 
-with tab1:
+if section == "Customers":
     col_add, col_list = st.columns([1, 2])
 
     with col_add:
@@ -811,7 +821,7 @@ with tab1:
                                         (1, clean_name, clean_phone))
                         conn.commit()
                         cur.close()
-                        st.success(f"Added **{clean_name}**")
+                        st.session_state.flash = f"Customer {clean_name} added. Open Ledger to record their first transaction."
                         st.rerun()
                     except mysql.connector.Error as e:
                         conn.rollback()
@@ -824,7 +834,17 @@ with tab1:
             st.info("No customers yet. Add one to get started.")
         else:
             # Display clean sequential S.No (1, 2, 3...) instead of database customer_id
+            customer_search = st.text_input("Search customers", placeholder="Name or phone number")
             customer_display_df = customers_df.copy()
+            if customer_search.strip():
+                query = customer_search.strip()
+                customer_display_df = customer_display_df[
+                    customer_display_df["customer_name"].astype(str).str.contains(query, case=False, regex=False)
+                    | customer_display_df["phone"].astype(str).str.contains(query, case=False, regex=False)
+                ]
+            st.caption(f"{len(customer_display_df)} customers")
+            if customer_display_df.empty:
+                st.info("No matching customers. Try another name or phone number.")
             customer_display_df.insert(0, "S.No", range(1, len(customer_display_df) + 1))
             customer_display_df = customer_display_df[["S.No", "customer_name", "phone"]].rename(columns={
                 "customer_name": "Customer Name",
@@ -836,12 +856,13 @@ with tab1:
 # TAB 2 — LEDGER
 # =========================
 
-with tab2:
+if section == "Ledger":
     if customers_df.empty:
         st.info("No customers found. Add a customer first in the Customers tab.")
     else:
         selected_name = st.selectbox("Select Customer", list(customer_dict.keys()), key="ledger_customer")
         selected_customer = int(customer_dict[selected_name])
+        selected_name = str(customers_df.loc[customers_df["customer_id"] == selected_customer, "customer_name"].iloc[0])
 
         transactions_df = get_transactions(conn, selected_customer)
 
@@ -857,8 +878,8 @@ with tab2:
             """, unsafe_allow_html=True)
 
         # Add transaction form
-        with st.expander("➕ Add New Transaction", expanded=False):
-            with st.form("add_transaction_form"):
+        with st.expander("Record a sale or payment", expanded=transactions_df.empty):
+            with st.form(f"add_transaction_form_{selected_customer}"):
                 c1, c2, c3, c4 = st.columns(4)
                 trans_date = c1.date_input("Date", date.today())
                 trans_id = c2.text_input("Transaction ID")
@@ -866,9 +887,9 @@ with tab2:
                 product = c4.text_input("Product")
 
                 c5, c6, c7 = st.columns(3)
-                litres = c5.number_input("Litres", value=0.0, step=0.01)
-                debit = c6.number_input("Debit (+)", value=0.0, step=0.01)
-                credit = c7.number_input("Credit (−)", value=0.0, step=0.01)
+                litres = c5.number_input("Litres", min_value=0.0, value=0.0, step=0.01)
+                debit = c6.number_input("Sale / debit (₹)", min_value=0.0, value=0.0, step=0.01)
+                credit = c7.number_input("Payment / credit (₹)", min_value=0.0, value=0.0, step=0.01)
 
                 add_trans = st.form_submit_button("Add Transaction", use_container_width=True)
 
@@ -908,10 +929,10 @@ with tab2:
                             ]])
 
                             if sync_ok:
-                                st.success("✅ Transaction added & synced to Google Sheets!")
+                                st.session_state.flash = "Transaction saved and synced to Google Sheets."
                             else:
-                                st.success("✅ Transaction added to MySQL!")
-                                st.warning(f"Google Sheets notice: {sync_msg}")
+                                st.session_state.flash = "Transaction saved to the ledger."
+                                st.session_state.sync_notice = f"Google Sheets needs attention: {sync_msg}"
 
                             st.rerun()
                         except mysql.connector.Error as e:
@@ -950,6 +971,10 @@ with tab2:
         elif preset == "All Time":
             start_dt = min_date
             end_dt = max_date
+
+        if start_dt > end_dt:
+            st.warning("Choose an end date on or after the start date.")
+            st.stop()
 
         # Filter dataframe
         if not transactions_df.empty:
@@ -1041,7 +1066,7 @@ with tab2:
 # TAB 3 — IMPORT EXCEL
 # =========================
 
-with tab3:
+if section == "Import":
     st.markdown("#### 📥 Import Transactions from Excel")
 
     if customers_df.empty:
@@ -1049,6 +1074,7 @@ with tab3:
     else:
         import_customer = st.selectbox("Select Customer to Import Into", list(customer_dict.keys()), key="import_customer")
         import_customer_id = int(customer_dict[import_customer])
+        import_customer = str(customers_df.loc[customers_df["customer_id"] == import_customer_id, "customer_name"].iloc[0])
 
         st.markdown("""
         <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:12px; padding:16px 20px; margin:12px 0; color:#1e40af; font-size:14px;">
@@ -1199,7 +1225,7 @@ with tab3:
 # TAB 4 — MANAGE / DELETE
 # =========================
 
-with tab4:
+if section == "Manage":
     if customers_df.empty:
         st.info("No customers available.")
     else:
@@ -1211,7 +1237,8 @@ with tab4:
             del_cust_id = int(customer_dict[del_cust_name])
 
             st.caption("⚠️ This will delete all transactions for this customer.")
-            if st.button("Delete Customer", key="btn_del_cust"):
+            confirmation = st.text_input("Type the customer selection above to confirm deletion", key=f"confirm_customer_{del_cust_id}")
+            if st.button("Permanently delete customer", key="btn_del_cust", disabled=confirmation != del_cust_name):
                 try:
                     cur = run_query(conn, "DELETE FROM customers WHERE customer_id=%s", (del_cust_id,))
                     conn.commit()
@@ -1220,12 +1247,13 @@ with tab4:
                     st.rerun()
                 except mysql.connector.Error as e:
                     conn.rollback()
-                    st.error(f"Error: {e}")
+                    st.error("The operation could not be completed. Your changes were not saved. Please try again.")
 
         with col_del_trans:
             st.markdown("#### 🗑 Delete Transaction")
             manage_name = st.selectbox("Select Customer", list(customer_dict.keys()), key="manage_cust")
             manage_id = int(customer_dict[manage_name])
+            manage_name = str(customers_df.loc[customers_df["customer_id"] == manage_id, "customer_name"].iloc[0])
 
             trans_df = get_transactions(conn, manage_id)
 
@@ -1235,9 +1263,11 @@ with tab4:
                 st.dataframe(trans_df[["id", "trans_date", "trans_id", "debit", "credit"]],
                              use_container_width=True, hide_index=True, height=250)
 
-                del_trans_id = st.number_input("Transaction DB ID", min_value=1, step=1, key="del_trans_id")
+                transaction_options = {int(row.id): f"{row.trans_date} · {row.trans_id} · Debit ₹{row.debit} / Credit ₹{row.credit} · #{row.id}" for row in trans_df.itertuples()}
+                del_trans_id = st.selectbox("Transaction to delete", list(transaction_options), format_func=transaction_options.get, key=f"del_trans_{manage_id}")
+                confirmed_transaction = st.checkbox("I understand this permanently deletes the selected transaction.", key=f"confirm_transaction_{manage_id}_{del_trans_id}")
 
-                if st.button("Delete Transaction", key="btn_del_trans", type="primary"):
+                if st.button("Delete Transaction", key="btn_del_trans", disabled=not confirmed_transaction):
                     try:
                         # Verify and retrieve transaction details before deleting
                         chk = run_query(conn, """
@@ -1281,7 +1311,7 @@ with tab4:
                             st.rerun()
                     except Exception as e:
                         conn.rollback()
-                        st.error(f"Error deleting transaction: {e}")
+                        st.error("Deletion failed. Refresh the ledger before trying again.")
 
         # ==========================================
         # 📦 YEARLY STORAGE PRUNE & ARCHIVAL SECTION
