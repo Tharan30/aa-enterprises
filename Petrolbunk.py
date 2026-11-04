@@ -14,18 +14,22 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from tkcalendar import DateEntry
 import pandas as pd
+import os
+from ledger_security import mysql_options
 
 
 # =========================================================
 # MYSQL CONNECTION
 # =========================================================
 
-conn = mysql.connector.connect(
-    host="192.168.1.40",
-    user="ledger_user",
-    password="StrongPassword@123",
-    database="aa_enterprises"
-)
+conn = mysql.connector.connect(**mysql_options({
+    "host": os.environ["AA_DB_HOST"],
+    "port": os.environ.get("AA_DB_PORT", "3306"),
+    "user": os.environ["AA_DB_USER"],
+    "password": os.environ["AA_DB_PASSWORD"],
+    "database": os.environ["AA_DB_NAME"],
+    "ssl_ca": os.environ["AA_DB_SSL_CA"],
+}))
 
 # IMPORTANT: buffered=True prevents "Unread result found"
 cursor = conn.cursor(buffered=True)

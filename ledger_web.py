@@ -10,6 +10,8 @@ import hmac
 import time
 import logging
 import re
+from html import escape
+from ledger_security import mysql_options, validate_xlsx
 
 # Secure server-side logging (never exposed to client browser)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -93,7 +95,7 @@ div[data-testid="stExpander"] details summary span {
 }
 
 .block-container {
-    padding-top: 1.5rem;
+    padding-top: 4.5rem;
     padding-bottom: 2rem;
     max-width: 1200px;
 }
@@ -223,6 +225,29 @@ div[data-testid="stExpander"] details summary span {
     border-radius: 8px;
     border-color: #cbd5e1;
 }
+
+.app-header { text-align: left; padding: 24px 28px; border-radius: 20px;
+    background: #eaf2ff; border: 1px solid #cbdcf5; margin-bottom: 24px; }
+.app-title { font-size: clamp(24px, 4vw, 38px); letter-spacing: -1px; }
+.metric-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.m-card { min-width: 0; padding: 20px; border-top: 3px solid #2563eb; }
+.m-card .value { font-size: clamp(18px, 2.2vw, 28px); overflow-wrap: anywhere; }
+.stTabs [data-baseweb="tab-list"] { overflow-x: auto; }
+.stTabs [data-baseweb="tab"] { min-height: 48px; white-space: nowrap; }
+button:focus-visible, input:focus-visible, textarea:focus-visible {
+    outline: 3px solid #2563eb !important; outline-offset: 3px; }
+.stButton>button, .stFormSubmitButton>button { min-height: 44px; }
+@media (max-width: 768px) {
+    .block-container { padding: 4.5rem 1rem 1rem; }
+    .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .app-header { padding: 18px; }
+    .stTabs [data-baseweb="tab"] { padding: 10px 12px; }
+    [data-testid="stHorizontalBlock"] { flex-wrap: wrap; }
+    [data-testid="stColumn"] { min-width: 100% !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -256,21 +281,25 @@ def check_password():
         st.stop()
 
     st.markdown("""
-    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:60vh;">
+    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:22vh;">
         <div style="font-size:48px; margin-bottom:8px;">⛽</div>
         <div style="font-size:32px; font-weight:800; color:#1e293b;">AA ENTERPRISES</div>
         <div style="color:#64748b; font-size:15px; margin-bottom:28px;">Enter password to access the dashboard</div>
     </div>
     """, unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([1, 1, 1])
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.form("login_form"):
-            password = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Enter password...")
+            password = st.text_input("Password", type="password", placeholder="Enter your access password")
             submitted = st.form_submit_button("Login", use_container_width=True)
 
             if submitted:
-                expected_pwd = str(st.secrets.get("app_password", "")).strip()
+                try:
+                    expected_pwd = str(st.secrets.get("app_password", "")).strip()
+                except (KeyError, FileNotFoundError):
+                    st.error("Sign-in is unavailable. Please contact your administrator.")
+                    return False
                 # Constant-time comparison to prevent timing side-channel attacks
                 if expected_pwd and hmac.compare_digest(password.strip(), expected_pwd):
                     st.session_state.authenticated = True
@@ -301,19 +330,10 @@ if not check_password():
 def get_connection():
     """Create a fresh MySQL connection each run."""
     try:
-        conn = mysql.connector.connect(
-            host=st.secrets["mysql"]["host"],
-            port=int(st.secrets["mysql"]["port"]),
-            user=st.secrets["mysql"]["user"],
-            password=st.secrets["mysql"]["password"],
-            database=st.secrets["mysql"]["database"],
-            ssl_disabled=st.secrets["mysql"].get("ssl_disabled", False),
-            autocommit=False,
-            connection_timeout=10
-        )
+        conn = mysql.connector.connect(**mysql_options(st.secrets["mysql"]))
         return conn
-    except mysql.connector.Error as e:
-        st.error(f"Database connection failed: {e}")
+    except (mysql.connector.Error, KeyError, ValueError, TypeError, FileNotFoundError):
+        st.error("Database unavailable. Please contact your administrator.")
         st.stop()
 
 
@@ -357,15 +377,15 @@ def get_google_sheet():
     """Connect to Google Sheet using built-in authentication."""
     try:
         import gsync_auth
-        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+        scopes = ['https://www.googleapis.com/auth/spreadsheets']
         creds_info = gsync_auth.get_credentials_info()
         creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         client = gspread.authorize(creds)
-        sheet_id = st.secrets.get("google_sheet_id", "1C_SZGXkWEpmmH_UojnOStyxXRUAWOVhoo7-U8mI9lnQ")
+        sheet_id = st.secrets["google_sheet_id"]
         sheet = client.open_by_key(sheet_id)
         return sheet, None
     except Exception as e:
-        return None, str(e)
+        return None, "Google Sheets connection unavailable. Check server configuration."
 
 
 def sync_to_google_sheet(customer_name, rows_to_append):
@@ -400,10 +420,10 @@ def sync_to_google_sheet(customer_name, rows_to_append):
             ])
 
         # Batch append rows
-        worksheet.append_rows(rows_to_append, value_input_option="USER_ENTERED")
+        worksheet.append_rows(rows_to_append, value_input_option="RAW")
         return True, "Synced successfully"
     except Exception as e:
-        return False, str(e)
+        return False, "Google Sheets operation failed. Please contact your administrator."
 
 
 def dates_match(d1, d2):
@@ -514,13 +534,13 @@ def delete_transaction_from_google_sheet(customer_name, trans_date, trans_id, de
                     running_bal += (deb_val - cred_val)
                     updated_balances.append([round(running_bal, 2)])
                 end_row = 1 + len(updated_balances)
-                worksheet.update(range_name=f"H2:H{end_row}", values=updated_balances, value_input_option="USER_ENTERED")
+                worksheet.update(range_name=f"H2:H{end_row}", values=updated_balances, value_input_option="RAW")
         except Exception:
             pass  # Row deletion was already successful
 
         return True, f"Transaction row #{target_row_idx} deleted from Google Sheet."
     except Exception as e:
-        return False, str(e)
+        return False, "Google Sheets operation failed. Please contact your administrator."
 
 
 # =========================
@@ -553,143 +573,12 @@ def recalculate_balances(conn, customer_id):
             "UPDATE ledger_transactions SET balance=%s WHERE id=%s",
             (round(running, 2), row_id)
         )
-    conn.commit()
     update_cur.close()
 
 
-def ensure_transactions_in_google_sheet(customer_name, tx_rows):
-    """
-    Safely verifies and appends any un-synced transactions to Google Sheets
-    BEFORE annual clearance in MySQL.
-    NEVER duplicates existing rows.
-    NEVER deletes any rows from Google Sheets.
-    """
-    try:
-        sheet, err = get_google_sheet()
-        if not sheet or not tx_rows:
-            return
-        
-        tab_name = "".join(c for c in customer_name if c not in r'/\?*[]:').strip()[:30]
-        if not tab_name:
-            tab_name = "Customer"
-
-        existing_titles = [ws.title for ws in sheet.worksheets()]
-        if tab_name not in existing_titles:
-            worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=10)
-            worksheet.append_row([
-                "Date", "Transaction ID", "Vehicle", "Product",
-                "Litres", "Debit (₹)", "Credit (₹)", "Balance (₹)"
-            ])
-            existing_data = []
-        else:
-            worksheet = sheet.worksheet(tab_name)
-            existing_data = worksheet.get_all_values()
-
-        existing_keys = set()
-        for r in existing_data[1:]:
-            if len(r) >= 7:
-                k_date = str(r[0]).strip()
-                k_txid = str(r[1]).strip().lower()
-                k_deb = f"{clean_amount(r[5]):.2f}"
-                k_cred = f"{clean_amount(r[6]):.2f}"
-                existing_keys.add((k_date, k_txid, k_deb, k_cred))
-
-        missing_rows = []
-        for r in tx_rows:
-            # r: [id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance]
-            s_date = str(r[1]).strip()
-            s_txid = str(r[2] or "").strip().lower()
-            s_deb = f"{float(r[6] or 0):.2f}"
-            s_cred = f"{float(r[7] or 0):.2f}"
-
-            key = (s_date, s_txid, s_deb, s_cred)
-            if key not in existing_keys:
-                missing_rows.append([
-                    str(r[1]), str(r[2] or ""), str(r[3] or ""), str(r[4] or ""),
-                    float(r[5] or 0), float(r[6] or 0), float(r[7] or 0), float(r[8] or 0)
-                ])
-
-        if missing_rows:
-            worksheet.append_rows(missing_rows, value_input_option="USER_ENTERED")
-    except Exception:
-        pass
-
-
 def archive_old_year_transactions(conn, target_year):
-    """
-    Annual Database Clearance for a specific year (e.g. 2025):
-    1. Ensures any un-synced transactions are safely archived in Google Sheets (no duplicates).
-    2. Calculates customer's net movement for that year.
-    3. Deletes target year's transactions ONLY from MySQL database to free up disk space.
-    4. Inserts a clean 'B/F Balance (target_year)' summary transaction in MySQL.
-    5. Recalculates running balances in MySQL for all subsequent records.
-    
-    STRICT SAFETY GUARANTEE:
-    - Google Sheets is NEVER modified for deletion.
-    - Full detailed transaction history is permanently preserved in Google Drive.
-    """
-    try:
-        cur = run_query(conn, "SELECT customer_id, customer_name FROM customers")
-        all_custs = cur.fetchall()
-        cur.close()
-
-        total_pruned = 0
-        for cust_id, cust_name in all_custs:
-            # Fetch transactions for target year
-            cur_tx = run_query(conn, """
-            SELECT id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance
-            FROM ledger_transactions
-            WHERE customer_id=%s AND YEAR(trans_date)=%s
-            ORDER BY trans_date ASC, id ASC
-            """, (cust_id, target_year))
-            tx_rows = cur_tx.fetchall()
-            cur_tx.close()
-
-            if not tx_rows:
-                continue
-
-            # Step 1: Ensure backed up in Google Sheets (NO deletion on Sheets!)
-            ensure_transactions_in_google_sheet(cust_name, tx_rows)
-
-            # Step 2: Calculate net movement for that year
-            net_diff = round(sum(float(r[6] or 0) - float(r[7] or 0) for r in tx_rows), 2)
-
-            # Step 3: Delete old year's transactions ONLY from MySQL
-            del_cur = run_query(conn, """
-            DELETE FROM ledger_transactions
-            WHERE customer_id=%s AND YEAR(trans_date)=%s
-            """, (cust_id, target_year))
-            conn.commit()
-            del_cur.close()
-            total_pruned += len(tx_rows)
-
-            # Step 4: Insert B/F Balance record in MySQL to preserve balance continuity
-            op_debit = net_diff if net_diff > 0 else 0.0
-            op_credit = abs(net_diff) if net_diff < 0 else 0.0
-            ins_cur = run_query(conn, """
-            INSERT INTO ledger_transactions (customer_id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                cust_id,
-                f"{target_year}-12-31",
-                f"BF-{target_year}",
-                "-",
-                f"B/F Balance ({target_year})",
-                0.0,
-                op_debit,
-                op_credit,
-                0.0
-            ))
-            conn.commit()
-            ins_cur.close()
-
-            # Recalculate MySQL running balances
-            recalculate_balances(conn, cust_id)
-
-        return True, f"Successfully cleared {total_pruned} records for year {target_year} from MySQL. Google Sheets historical data remains 100% intact!"
-    except Exception as e:
-        conn.rollback()
-        return False, str(e)
+    """Disabled until archival is verifiable, idempotent and transactionally safe."""
+    return False, "Yearly clearance is disabled pending verified backup and recovery validation."
 
 
 def get_customers(conn):
@@ -711,7 +600,7 @@ def get_transactions(conn, customer_id):
 st.markdown("""
 <div class="app-header">
     <div class="app-title">⛽ AA ENTERPRISES</div>
-    <div class="app-subtitle">Sales Ledger Dashboard</div>
+    <div class="app-subtitle">Customer accounts · Sales & payments</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -754,19 +643,29 @@ st.markdown(f"""
 # Build customer lookup
 customer_dict = {}
 if not customers_df.empty:
-    customer_dict = dict(zip(customers_df["customer_name"], customers_df["customer_id"]))
+    customer_dict = {f"{row.customer_name} · #{row.customer_id}": row.customer_id for row in customers_df.itertuples()}
 
 # =========================
 # TABS
 # =========================
 
-tab1, tab2, tab3, tab4 = st.tabs(["👥 Customers", "📒 Ledger", "📥 Import Excel", "⚙️ Manage"])
+section = st.radio("Workspace", ["Ledger", "Customers", "Import", "Manage"], horizontal=True, key="workspace")
+st.caption({
+    "Ledger": "Review balances, record sales and payments, and download statements.",
+    "Customers": "Keep customer contact details organized and easy to find.",
+    "Import": "Bring existing transactions into a customer's ledger.",
+    "Manage": "Review records carefully before permanent deletion.",
+}[section])
+if "flash" in st.session_state:
+    st.success(st.session_state.pop("flash"))
+if "sync_notice" in st.session_state:
+    st.warning(st.session_state.pop("sync_notice"))
 
 # =========================
 # TAB 1 — CUSTOMERS
 # =========================
 
-with tab1:
+if section == "Customers":
     col_add, col_list = st.columns([1, 2])
 
     with col_add:
@@ -787,7 +686,7 @@ with tab1:
                                         (1, clean_name, clean_phone))
                         conn.commit()
                         cur.close()
-                        st.success(f"Added **{clean_name}**")
+                        st.session_state.flash = f"Customer {clean_name} added. Open Ledger to record their first transaction."
                         st.rerun()
                     except mysql.connector.Error as e:
                         conn.rollback()
@@ -800,7 +699,17 @@ with tab1:
             st.info("No customers yet. Add one to get started.")
         else:
             # Display clean sequential S.No (1, 2, 3...) instead of database customer_id
+            customer_search = st.text_input("Search customers", placeholder="Name or phone number")
             customer_display_df = customers_df.copy()
+            if customer_search.strip():
+                query = customer_search.strip()
+                customer_display_df = customer_display_df[
+                    customer_display_df["customer_name"].astype(str).str.contains(query, case=False, regex=False)
+                    | customer_display_df["phone"].astype(str).str.contains(query, case=False, regex=False)
+                ]
+            st.caption(f"{len(customer_display_df)} customers")
+            if customer_display_df.empty:
+                st.info("No matching customers. Try another name or phone number.")
             customer_display_df.insert(0, "S.No", range(1, len(customer_display_df) + 1))
             customer_display_df = customer_display_df[["S.No", "customer_name", "phone"]].rename(columns={
                 "customer_name": "Customer Name",
@@ -812,12 +721,13 @@ with tab1:
 # TAB 2 — LEDGER
 # =========================
 
-with tab2:
+if section == "Ledger":
     if customers_df.empty:
         st.info("No customers found. Add a customer first in the Customers tab.")
     else:
         selected_name = st.selectbox("Select Customer", list(customer_dict.keys()), key="ledger_customer")
         selected_customer = int(customer_dict[selected_name])
+        selected_name = str(customers_df.loc[customers_df["customer_id"] == selected_customer, "customer_name"].iloc[0])
 
         transactions_df = get_transactions(conn, selected_customer)
 
@@ -828,13 +738,13 @@ with tab2:
             st.markdown(f"""
             <div style="background:{bal_color}; color:white; padding:16px 24px; border-radius:12px;
                         font-size:20px; font-weight:700; margin-bottom:16px;">
-                📌 {selected_name} — Balance: ₹ {last_balance:,.2f}
+                📌 {escape(str(selected_name))} — Balance: ₹ {last_balance:,.2f}
             </div>
             """, unsafe_allow_html=True)
 
         # Add transaction form
-        with st.expander("➕ Add New Transaction", expanded=False):
-            with st.form("add_transaction_form"):
+        with st.expander("Record a sale or payment", expanded=transactions_df.empty):
+            with st.form(f"add_transaction_form_{selected_customer}"):
                 c1, c2, c3, c4 = st.columns(4)
                 trans_date = c1.date_input("Date", date.today())
                 trans_id = c2.text_input("Transaction ID")
@@ -842,9 +752,9 @@ with tab2:
                 product = c4.text_input("Product")
 
                 c5, c6, c7 = st.columns(3)
-                litres = c5.number_input("Litres", value=0.0, step=0.01)
-                debit = c6.number_input("Debit (+)", value=0.0, step=0.01)
-                credit = c7.number_input("Credit (−)", value=0.0, step=0.01)
+                litres = c5.number_input("Litres", min_value=0.0, value=0.0, step=0.01)
+                debit = c6.number_input("Sale / debit (₹)", min_value=0.0, value=0.0, step=0.01)
+                credit = c7.number_input("Payment / credit (₹)", min_value=0.0, value=0.0, step=0.01)
 
                 add_trans = st.form_submit_button("Add Transaction", use_container_width=True)
 
@@ -864,9 +774,9 @@ with tab2:
                             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
                             """, (selected_customer, trans_date, clean_tx_id, clean_vehicle,
                                   clean_product, float(litres), float(debit), float(credit), 0))
-                            conn.commit()
                             cur.close()
                             recalculate_balances(conn, selected_customer)
+                            conn.commit()
 
                             # Auto-append to dedicated customer worksheet in Google Sheets
                             updated_txns = get_transactions(conn, selected_customer)
@@ -884,10 +794,10 @@ with tab2:
                             ]])
 
                             if sync_ok:
-                                st.success("✅ Transaction added & synced to Google Sheets!")
+                                st.session_state.flash = "Transaction saved and synced to Google Sheets."
                             else:
-                                st.success("✅ Transaction added to MySQL!")
-                                st.warning(f"Google Sheets notice: {sync_msg}")
+                                st.session_state.flash = "Transaction saved to the ledger."
+                                st.session_state.sync_notice = f"Google Sheets needs attention: {sync_msg}"
 
                             st.rerun()
                         except mysql.connector.Error as e:
@@ -926,6 +836,10 @@ with tab2:
         elif preset == "All Time":
             start_dt = min_date
             end_dt = max_date
+
+        if start_dt > end_dt:
+            st.warning("Choose an end date on or after the start date.")
+            st.stop()
 
         # Filter dataframe
         if not transactions_df.empty:
@@ -1017,7 +931,7 @@ with tab2:
 # TAB 3 — IMPORT EXCEL
 # =========================
 
-with tab3:
+if section == "Import":
     st.markdown("#### 📥 Import Transactions from Excel")
 
     if customers_df.empty:
@@ -1025,6 +939,7 @@ with tab3:
     else:
         import_customer = st.selectbox("Select Customer to Import Into", list(customer_dict.keys()), key="import_customer")
         import_customer_id = int(customer_dict[import_customer])
+        import_customer = str(customers_df.loc[customers_df["customer_id"] == import_customer_id, "customer_name"].iloc[0])
 
         st.markdown("""
         <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:12px; padding:16px 20px; margin:12px 0; color:#1e40af; font-size:14px;">
@@ -1036,11 +951,12 @@ with tab3:
         </div>
         """, unsafe_allow_html=True)
 
-        uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type=["xlsx", "xls"], key="excel_upload")
+        uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type=["xlsx"], key="excel_upload")
 
         if uploaded_file is not None:
             try:
-                df = pd.read_excel(uploaded_file)
+                validate_xlsx(uploaded_file)
+                df = pd.read_excel(uploaded_file, engine="openpyxl", nrows=5001)
 
                 if df.empty:
                     st.warning("The uploaded file is empty.")
@@ -1120,35 +1036,20 @@ with tab3:
                                 INSERT INTO ledger_transactions(customer_id, trans_date, trans_id, vehicle, product, litres, debit, credit, balance)
                                 VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
                                 """, records_to_insert)
-                                conn.commit()
                                 insert_cur.close()
 
                                 recalculate_balances(conn, import_customer_id)
+                                conn.commit()
 
-                                # Auto-sync batch import to Google Sheets dedicated customer tab
-                                updated_txns = get_transactions(conn, import_customer_id)
-                                gsheet_rows = []
-                                for _, r in updated_txns.tail(len(records_to_insert)).iterrows():
-                                    gsheet_rows.append([
-                                        str(r["trans_date"]),
-                                        str(r["trans_id"]),
-                                        str(r["vehicle"]),
-                                        str(r["product"]),
-                                        float(r["litres"]),
-                                        float(r["debit"]),
-                                        float(r["credit"]),
-                                        float(r["balance"])
-                                    ])
-                                sync_to_google_sheet(import_customer, gsheet_rows)
-
-                                st.success(f"✅ Successfully imported {len(records_to_insert)} transactions and synced to Google Sheets!")
+                                st.session_state.flash = f"Imported {len(records_to_insert)} transactions into MySQL."
+                                st.session_state.sync_notice = "Google Sheets sync requires administrator reconciliation. Do not repeat this import."
                                 st.rerun()
                             except mysql.connector.Error as e:
                                 conn.rollback()
-                                st.error(f"❌ Error during import: {e}")
+                                st.error("Import failed. Database changes were rolled back. Please contact your administrator.")
 
             except Exception as e:
-                st.error(f"Error reading Excel file: {e}")
+                st.error("Could not read this XLSX file. Check the format and size limits (5 MiB upload, 25 MiB expanded).")
 
         # Download template
         st.markdown("---")
@@ -1175,7 +1076,7 @@ with tab3:
 # TAB 4 — MANAGE / DELETE
 # =========================
 
-with tab4:
+if section == "Manage":
     if customers_df.empty:
         st.info("No customers available.")
     else:
@@ -1187,7 +1088,8 @@ with tab4:
             del_cust_id = int(customer_dict[del_cust_name])
 
             st.caption("⚠️ This will delete all transactions for this customer.")
-            if st.button("Delete Customer", key="btn_del_cust"):
+            confirmation = st.text_input("Type the customer selection above to confirm deletion", key=f"confirm_customer_{del_cust_id}")
+            if st.button("Permanently delete customer", key="btn_del_cust", disabled=confirmation != del_cust_name):
                 try:
                     cur = run_query(conn, "DELETE FROM customers WHERE customer_id=%s", (del_cust_id,))
                     conn.commit()
@@ -1196,12 +1098,13 @@ with tab4:
                     st.rerun()
                 except mysql.connector.Error as e:
                     conn.rollback()
-                    st.error(f"Error: {e}")
+                    st.error("The operation could not be completed. Your changes were not saved. Please try again.")
 
         with col_del_trans:
             st.markdown("#### 🗑 Delete Transaction")
             manage_name = st.selectbox("Select Customer", list(customer_dict.keys()), key="manage_cust")
             manage_id = int(customer_dict[manage_name])
+            manage_name = str(customers_df.loc[customers_df["customer_id"] == manage_id, "customer_name"].iloc[0])
 
             trans_df = get_transactions(conn, manage_id)
 
@@ -1211,9 +1114,11 @@ with tab4:
                 st.dataframe(trans_df[["id", "trans_date", "trans_id", "debit", "credit"]],
                              use_container_width=True, hide_index=True, height=250)
 
-                del_trans_id = st.number_input("Transaction DB ID", min_value=1, step=1, key="del_trans_id")
+                transaction_options = {int(row.id): f"{row.trans_date} · {row.trans_id} · Debit ₹{row.debit} / Credit ₹{row.credit} · #{row.id}" for row in trans_df.itertuples()}
+                del_trans_id = st.selectbox("Transaction to delete", list(transaction_options), format_func=transaction_options.get, key=f"del_trans_{manage_id}")
+                confirmed_transaction = st.checkbox("I understand this permanently deletes the selected transaction.", key=f"confirm_transaction_{manage_id}_{del_trans_id}")
 
-                if st.button("Delete Transaction", key="btn_del_trans", type="primary"):
+                if st.button("Delete Transaction", key="btn_del_trans", disabled=not confirmed_transaction):
                     try:
                         # Verify and retrieve transaction details before deleting
                         chk = run_query(conn, """
@@ -1231,11 +1136,11 @@ with tab4:
 
                             # 1. Delete from MySQL database
                             cur = run_query(conn, "DELETE FROM ledger_transactions WHERE id=%s AND customer_id=%s", (del_trans_id, manage_id))
-                            conn.commit()
                             cur.close()
 
                             # 2. Recalculate MySQL running balances
                             recalculate_balances(conn, manage_id)
+                            conn.commit()
 
                             # 3. Delete matching row from customer's Google Sheet
                             gs_ok, gs_msg = delete_transaction_from_google_sheet(
@@ -1257,100 +1162,18 @@ with tab4:
                             st.rerun()
                     except Exception as e:
                         conn.rollback()
-                        st.error(f"Error deleting transaction: {e}")
+                        st.error("Deletion failed. Refresh the ledger before trying again.")
 
         # ==========================================
         # 📦 YEARLY STORAGE PRUNE & ARCHIVAL SECTION
         # ==========================================
         st.markdown("---")
         st.markdown("#### 🧹 Clean Transactions (Yearly Database Clearance)")
-        st.markdown(
-            "<p style='color:#64748b; font-size:13px; margin-bottom:16px;'>"
-            "Clean up historical records from <b>MySQL database</b> to free up storage. "
-            "A single <b>B/F Balance (Year)</b> summary entry is kept in MySQL to maintain balance continuity.<br>"
-            "<b style='color:#16a34a;'>🛡️ Google Drive Protection:</b> Your Google Spreadsheet data is <b>NEVER deleted</b> during manual database clearance. "
-            "All historical transactions remain permanently in Google Sheets."
-            "</p>",
-            unsafe_allow_html=True
-        )
-
         col_arch1, col_arch2 = st.columns([1.5, 2])
 
         with col_arch1:
-            # Check available distinct years in the transactions table
-            year_cur = run_query(conn, "SELECT DISTINCT YEAR(trans_date) FROM ledger_transactions WHERE trans_date IS NOT NULL ORDER BY 1 ASC")
-            available_years = [int(y[0]) for y in year_cur.fetchall() if y[0] is not None]
-            year_cur.close()
-
-            if not available_years:
-                st.info("No transaction records found in the database to clean.")
-            else:
-                target_year = st.selectbox("Select Year to Clean from MySQL", available_years, key="archive_year_sel")
-
-                # Count records for that year
-                cnt_cur = run_query(conn, "SELECT COUNT(*) FROM ledger_transactions WHERE YEAR(trans_date)=%s", (target_year,))
-                year_records = cnt_cur.fetchone()[0]
-                cnt_cur.close()
-
-                st.caption(f"Found **{year_records}** records for year **{target_year}** in MySQL.")
-
-                st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
-                if "cleanup_failed_attempts" not in st.session_state:
-                    st.session_state.cleanup_failed_attempts = 0
-                if "cleanup_lockout_until" not in st.session_state:
-                    st.session_state.cleanup_lockout_until = 0.0
-
-                now = time.time()
-                is_cleanup_locked = now < st.session_state.cleanup_lockout_until
-
-                if is_cleanup_locked:
-                    rem_sec = int(st.session_state.cleanup_lockout_until - now)
-                    st.error(f"🔒 Yearly clearance locked due to multiple failed attempts. Please wait {rem_sec} seconds.")
-
-                cleanup_master_pwd = st.text_input(
-                    "🔑 Master Password for Yearly Clearance",
-                    type="password",
-                    placeholder="Enter master password to authorize",
-                    key="yearly_cleanup_master_pwd",
-                    disabled=is_cleanup_locked,
-                    help="Master authorization password required to clear MySQL data."
-                )
-
-                confirm_cleanup_box = st.checkbox(
-                    f"⚠️ I confirm authorization to purge MySQL records for year {target_year} (Google Sheets audit trail remains 100% preserved).",
-                    key=f"confirm_clean_{target_year}"
-                )
-
-                if st.button(f"🧹 Clean Year {target_year} Transactions (MySQL Only)", type="primary", key="btn_run_archive", disabled=is_cleanup_locked):
-                    expected_master = str(st.secrets.get("yearly_cleanup_password", "AAYEARLYCLEANUP")).strip()
-
-                    if not cleanup_master_pwd:
-                        st.error("🔒 Master Password is required to perform yearly database clearance.")
-                    # Constant-time comparison to prevent timing attacks
-                    elif not hmac.compare_digest(cleanup_master_pwd.strip(), expected_master):
-                        st.session_state.cleanup_failed_attempts += 1
-                        attempts = st.session_state.cleanup_failed_attempts
-                        logger.warning(f"Failed master clearance password attempt ({attempts}/3)")
-                        if attempts >= 3:
-                            st.session_state.cleanup_lockout_until = time.time() + 60.0
-                            st.error("🔒 Too many incorrect master password attempts. Clearance locked for 60 seconds.")
-                        else:
-                            st.error(f"❌ Invalid Master Password! Access denied ({attempts}/3 attempts before lockout).")
-                    elif not confirm_cleanup_box:
-                        st.warning("⚠️ Please check the confirmation box above to verify authorization.")
-                    elif year_records == 0:
-                        st.warning(f"No records found to clean for year {target_year}.")
-                    else:
-                        st.session_state.cleanup_failed_attempts = 0
-                        with st.spinner(f"Safely clearing year {target_year} from MySQL (Google Drive 100% preserved)..."):
-                            ok, msg = archive_old_year_transactions(conn, target_year)
-                            if ok:
-                                logger.info(f"Annual cleanup executed for year {target_year}.")
-                                st.success(f"✅ {msg}")
-                                st.rerun()
-                            else:
-                                logger.error(f"Archival error: {msg}")
-                                st.error("❌ An error occurred during database clearance.")
+            st.warning("Yearly clearance is disabled until backup verification and recovery testing are complete.")
+            st.button("Yearly clearance unavailable", key="btn_run_archive", disabled=True)
 
         with col_arch2:
             # Query table size
