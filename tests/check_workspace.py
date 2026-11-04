@@ -1,4 +1,6 @@
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from unittest.mock import patch, MagicMock
 from datetime import date
 import pandas as pd
@@ -18,7 +20,7 @@ def execute(query, params=None):
 connection.cursor.return_value.execute.side_effect = execute
 with patch('mysql.connector.connect', return_value=connection), patch('pandas.read_sql', side_effect=read_sql):
     app = AppTest.from_string(source, default_timeout=20)
-    app.secrets['mysql'] = dict(host='test', port=3306, user='test', password='test', database='test')
+    app.secrets['mysql'] = dict(host='test', port=3306, user='test', password='test', database='test', ssl_ca='test-ca.pem')
     app.run()
     assert not app.exception, app.exception
     assert app.radio(key='workspace').value == 'Ledger'
@@ -32,5 +34,5 @@ with patch('mysql.connector.connect', return_value=connection), patch('pandas.re
         if section == 'Manage':
             assert app.button(key='btn_del_cust').disabled
             assert app.button(key='btn_del_trans').disabled
+            assert app.button(key='btn_run_archive').disabled
     print('PASS: four workspaces, duplicate customer selection, search empty state, deletion guards')
-

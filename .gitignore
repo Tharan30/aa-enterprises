@@ -1,4 +1,4 @@
-# Secrets — NEVER push this
+# Secrets - never commit deployment credentials
 .streamlit/secrets.toml
 
 # Python
@@ -20,3 +20,8 @@ Backup/
 # Google Credentials & Test Scripts
 google_creds.json
 test_gspread.py
+
+.venv/
+.env
+*.pem
+*.key
